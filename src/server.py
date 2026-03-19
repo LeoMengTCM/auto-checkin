@@ -794,4 +794,4 @@ if __name__ == "__main__":
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
     print("\n  AnyRouter 签到助手")
     print("  http://localhost:8686\n")
-    app.run(host="127.0.0.1", port=8686, debug=False)
+    app.run(host="0.0.0.0", port=8686, debug=False)
