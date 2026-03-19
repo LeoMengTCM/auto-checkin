@@ -9,8 +9,11 @@ import logging
 from datetime import datetime, date
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from functools import wraps
+
+from flask import Flask, jsonify, request, send_from_directory, session
 from playwright.sync_api import sync_playwright
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__, static_folder="static")
 log = logging.getLogger("checkin")
@@ -61,6 +64,32 @@ def save_config(config):
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+
+# ── Auth helpers ──────────────────────────────────────────
+
+def _ensure_secret_key():
+    config = load_config()
+    if "secret_key" not in config:
+        import secrets
+        config["secret_key"] = secrets.token_hex(32)
+        save_config(config)
+    app.secret_key = config["secret_key"]
+
+_ensure_secret_key()
+
+
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        config = load_config()
+        if not config.get("password"):
+            return f(*args, **kwargs)
+        if not session.get("authed"):
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 
 def has_session(name):
@@ -616,7 +645,68 @@ def index():
     return send_from_directory("static", "index.html")
 
 
+@app.route("/api/auth/status")
+def auth_status():
+    config = load_config()
+    return jsonify({
+        "authed": bool(session.get("authed")),
+        "hasPassword": bool(config.get("password")),
+    })
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    config = load_config()
+    pw = (request.json or {}).get("password", "")
+    stored = config.get("password", "")
+    if not stored:
+        return jsonify({"error": "No password set"}), 400
+    if check_password_hash(stored, pw):
+        session["authed"] = True
+        return jsonify({"ok": True})
+    return jsonify({"error": "密码错误"}), 403
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/setup", methods=["POST"])
+def auth_setup():
+    config = load_config()
+    if config.get("password"):
+        return jsonify({"error": "Password already set"}), 400
+    pw = (request.json or {}).get("password", "")
+    if not pw or len(pw) < 4:
+        return jsonify({"error": "密码至少4位"}), 400
+    config["password"] = generate_password_hash(pw)
+    save_config(config)
+    session["authed"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/change-password", methods=["POST"])
+def auth_change_password():
+    if not session.get("authed"):
+        return jsonify({"error": "Unauthorized"}), 401
+    config = load_config()
+    data = request.json or {}
+    old_pw = data.get("oldPassword", "")
+    new_pw = data.get("newPassword", "")
+    stored = config.get("password", "")
+    if stored and not check_password_hash(stored, old_pw):
+        return jsonify({"error": "原密码错误"}), 403
+    if not new_pw or len(new_pw) < 4:
+        return jsonify({"error": "新密码至少4位"}), 400
+    config["password"] = generate_password_hash(new_pw)
+    save_config(config)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/accounts")
+@require_auth
 def get_accounts():
     config = load_config()
     history = load_history()
@@ -647,6 +737,7 @@ def get_accounts():
 
 
 @app.route("/api/accounts", methods=["POST"])
+@require_auth
 def add_account():
     data = request.json
     name = data.get("name", "").strip()
@@ -661,6 +752,7 @@ def add_account():
 
 
 @app.route("/api/accounts/<name>", methods=["DELETE"])
+@require_auth
 def remove_account(name):
     config = load_config()
     config["accounts"] = [a for a in config["accounts"] if a["name"] != name]
@@ -674,6 +766,7 @@ def remove_account(name):
 
 
 @app.route("/api/login-new", methods=["POST"])
+@require_auth
 def login_new():
     """Open browser for a brand new account. Auto-detects username."""
     # Check if another login is already in progress
@@ -688,6 +781,7 @@ def login_new():
 
 
 @app.route("/api/login/<name>", methods=["POST"])
+@require_auth
 def login_account(name):
     """Re-login an existing account."""
     config = load_config()
@@ -698,6 +792,7 @@ def login_account(name):
 
 
 @app.route("/api/checkin", methods=["POST"])
+@require_auth
 def checkin_all():
     global _busy
     if _busy:
@@ -723,6 +818,7 @@ def checkin_all():
 
 
 @app.route("/api/checkin/<name>", methods=["POST"])
+@require_auth
 def checkin_one(name):
     config = load_config()
     acc = next((a for a in config["accounts"] if a["name"] == name), None)
@@ -738,6 +834,7 @@ def checkin_one(name):
 
 
 @app.route("/api/refresh-balance", methods=["POST"])
+@require_auth
 def refresh_balance_all():
     global _refreshing
     if _refreshing:
@@ -772,6 +869,7 @@ def refresh_balance_all():
 
 
 @app.route("/api/refresh-balance/<name>", methods=["POST"])
+@require_auth
 def refresh_balance_one(name):
     config = load_config()
     acc = next((a for a in config["accounts"] if a["name"] == name), None)
@@ -785,6 +883,7 @@ def refresh_balance_one(name):
 
 
 @app.route("/api/history")
+@require_auth
 def get_history():
     return jsonify(load_history()[:100])
 

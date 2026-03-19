@@ -281,6 +281,7 @@ html, body {
   color: var(--text);
   min-width: 72px; text-align: right;
   flex-shrink: 0;
+  display: flex; align-items: center; justify-content: flex-end; gap: 2px;
 }
 .account-balance-col.has-balance { color: var(--green); }
 
@@ -464,6 +465,76 @@ html, body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Refresh One Button ────────────────────────────────── */
+.btn-refresh-one {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: transparent; color: var(--text-3);
+  opacity: 0; margin-left: 4px; vertical-align: middle;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  flex-shrink: 0;
+}
+.account-row:hover .btn-refresh-one { opacity: 0.6; }
+.btn-refresh-one:hover { opacity: 1 !important; background: var(--accent-tint); color: var(--accent); }
+.btn-refresh-one svg { width: 12px; height: 12px; }
+
+/* ── Auth Screen ─────────────────────────────────────── */
+#auth-screen {
+  position: fixed; inset: 0; z-index: 300;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+}
+#auth-screen.hidden { display: none; }
+.auth-card {
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 40px 36px;
+  width: 100%; max-width: 380px;
+}
+.auth-icon {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: linear-gradient(135deg, #C2703B 0%, #D4885A 100%);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 20px;
+}
+.auth-icon svg { width: 24px; height: 24px; color: #fff; }
+.auth-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; text-align: center; }
+.auth-desc { font-size: 14px; color: var(--text-2); margin-bottom: 24px; text-align: center; }
+.auth-input {
+  width: 100%; padding: 10px 14px;
+  border: 1px solid var(--sep); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text);
+  font-family: inherit; font-size: 15px; outline: none;
+  transition: border-color 150ms ease;
+  margin-bottom: 12px;
+}
+.auth-input:focus { border-color: var(--accent); }
+.auth-input.hidden { display: none; }
+.auth-error { font-size: 13px; color: var(--red); margin-bottom: 12px; min-height: 18px; text-align: center; }
+.auth-btn {
+  width: 100%; padding: 10px;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: var(--radius-sm);
+  font-family: inherit; font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: background 150ms ease;
+}
+.auth-btn:hover { background: var(--accent-hover); }
+.auth-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Logout Button ───────────────────────────────────── */
+.btn-logout {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: transparent; color: var(--text-3);
+  margin-left: auto; flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease;
+}
+.btn-logout:hover { background: var(--bg-hover); color: var(--text); }
+.btn-logout svg { width: 16px; height: 16px; }
+
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 640px) {
   .container { padding: 24px 16px 60px; }
@@ -478,6 +549,22 @@ html, body {
 </head>
 
 <body>
+<div id="auth-screen" class="hidden">
+  <div class="auth-card">
+    <div class="auth-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+    </div>
+    <div class="auth-title" id="auth-title">登录</div>
+    <div class="auth-desc" id="auth-desc">请输入管理员密码</div>
+    <div id="auth-form">
+      <input type="password" class="auth-input" id="auth-pw" placeholder="密码" autocomplete="current-password">
+      <input type="password" class="auth-input hidden" id="auth-pw2" placeholder="确认密码" autocomplete="new-password">
+      <div class="auth-error" id="auth-error"></div>
+      <button class="auth-btn" id="auth-submit" onclick="authSubmit()">登录</button>
+    </div>
+  </div>
+</div>
+
 <nav class="topbar">
   <div class="topbar-inner">
     <div class="brand">
@@ -490,6 +577,9 @@ html, body {
       <button class="tab active" data-view="dashboard" onclick="switchView('dashboard')">仪表盘</button>
       <button class="tab" data-view="activity" onclick="switchView('activity')">签到记录</button>
     </div>
+    <button class="btn-logout" id="btn-logout" onclick="authLogout()" title="退出登录" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    </button>
   </div>
 </nav>
 
@@ -525,7 +615,7 @@ html, body {
 let accounts = [];
 let pollTimer = null;
 let confirmingDelete = null;
-let sortByBalance = false;
+let sortByBalance = true;
 
 /* ── API ──────────────────────────────────────────────── */
 async function api(path, opts = {}) {
@@ -534,6 +624,7 @@ async function api(path, opts = {}) {
       headers: { 'Content-Type': 'application/json' },
       ...opts,
     });
+    if (res.status === 401) { showAuthScreen(); return null; }
     return await res.json();
   } catch {
     toast('无法连接到服务器', 'error');
@@ -706,7 +797,7 @@ function renderAccountRow(a) {
           ${statusHtml}
         </div>
       </div>
-      <div class="account-balance-col${balanceClass}">${esc(balanceText)}</div>
+      <div class="account-balance-col${balanceClass}">${esc(balanceText)}${a.hasSession && !['checking','refreshing','logging_in'].includes(a.state) ? `<button class="btn-refresh-one" onclick="event.stopPropagation();refreshBalanceOne('${esc(a.name)}')" title="刷新余额"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>` : ''}</div>
       <div class="account-actions">
         ${action}
         <button class="btn-remove" onclick="confirmDelete('${esc(a.name)}')" title="删除">${x}</button>
@@ -899,8 +990,108 @@ function toast(msg, type = '') {
   setTimeout(() => { el.classList.add('hiding'); setTimeout(() => el.remove(), 300); }, 3000);
 }
 
+/* ── Auth ─────────────────────────────────────────────── */
+let authMode = 'login';
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/status');
+    const data = await res.json();
+    if (!data.hasPassword) {
+      authMode = 'setup';
+      showAuthScreen();
+      return false;
+    }
+    if (!data.authed) {
+      authMode = 'login';
+      showAuthScreen();
+      return false;
+    }
+    document.getElementById('btn-logout').style.display = '';
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function showAuthScreen() {
+  const screen = document.getElementById('auth-screen');
+  const title = document.getElementById('auth-title');
+  const desc = document.getElementById('auth-desc');
+  const pw2 = document.getElementById('auth-pw2');
+  const submit = document.getElementById('auth-submit');
+  const error = document.getElementById('auth-error');
+  screen.classList.remove('hidden');
+  error.textContent = '';
+  document.getElementById('auth-pw').value = '';
+  if (authMode === 'setup') {
+    title.textContent = '设置管理员密码';
+    desc.textContent = '首次使用，请设置一个密码来保护管理面板';
+    pw2.classList.remove('hidden');
+    pw2.value = '';
+    submit.textContent = '设置密码';
+  } else {
+    title.textContent = '登录';
+    desc.textContent = '请输入管理员密码';
+    pw2.classList.add('hidden');
+    submit.textContent = '登录';
+  }
+  setTimeout(() => document.getElementById('auth-pw').focus(), 100);
+}
+
+function hideAuthScreen() {
+  document.getElementById('auth-screen').classList.add('hidden');
+  document.getElementById('btn-logout').style.display = '';
+}
+
+async function authSubmit() {
+  const pw = document.getElementById('auth-pw').value;
+  const error = document.getElementById('auth-error');
+  const submit = document.getElementById('auth-submit');
+  if (!pw) { error.textContent = '请输入密码'; return; }
+  if (authMode === 'setup') {
+    const pw2 = document.getElementById('auth-pw2').value;
+    if (pw !== pw2) { error.textContent = '两次密码不一致'; return; }
+    if (pw.length < 4) { error.textContent = '密码至少4位'; return; }
+    submit.disabled = true;
+    try {
+      const res = await fetch('/api/auth/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      const data = await res.json();
+      if (data.ok) { hideAuthScreen(); refresh(); }
+      else { error.textContent = data.error || '设置失败'; }
+    } catch { error.textContent = '网络错误'; }
+    submit.disabled = false;
+  } else {
+    submit.disabled = true;
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      const data = await res.json();
+      if (data.ok) { hideAuthScreen(); refresh(); }
+      else { error.textContent = data.error || '登录失败'; }
+    } catch { error.textContent = '网络错误'; }
+    submit.disabled = false;
+  }
+}
+
+async function authLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  document.getElementById('btn-logout').style.display = 'none';
+  authMode = 'login';
+  showAuthScreen();
+}
+
 /* ── Init ─────────────────────────────────────────────── */
-refresh();
+document.getElementById('auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') { if (authMode === 'setup') document.getElementById('auth-pw2').focus(); else authSubmit(); }});
+document.getElementById('auth-pw2').addEventListener('keydown', e => { if (e.key === 'Enter') authSubmit(); });
+(async () => { if (await checkAuth()) refresh(); })();
 </script>
 </body>
 </html>
