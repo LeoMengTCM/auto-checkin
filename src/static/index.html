@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnyRouter 签到助手</title>
+<style>
+:root {
+  --bg: #FAF9F7;
+  --bg-surface: #FFFFFF;
+  --bg-hover: rgba(0, 0, 0, 0.025);
+  --bg-active: rgba(0, 0, 0, 0.045);
+  --text: #1A1A1A;
+  --text-2: #6B6560;
+  --text-3: #9B9590;
+  --sep: rgba(0, 0, 0, 0.06);
+  --fill: rgba(0, 0, 0, 0.03);
+  --accent: #C2703B;
+  --accent-hover: #A85E30;
+  --accent-tint: rgba(194, 112, 59, 0.08);
+  --green: #5E8C61;
+  --green-tint: rgba(94, 140, 97, 0.08);
+  --red: #C45B4A;
+  --red-tint: rgba(196, 91, 74, 0.06);
+  --orange: #D97706;
+  --orange-tint: rgba(217, 119, 6, 0.08);
+  --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.03);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --topbar-h: 52px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1A1915;
+    --bg-surface: #252420;
+    --bg-hover: rgba(255, 255, 255, 0.04);
+    --bg-active: rgba(255, 255, 255, 0.07);
+    --text: #E8E4DF;
+    --text-2: #9B9590;
+    --text-3: #6B6560;
+    --sep: rgba(255, 255, 255, 0.07);
+    --fill: rgba(255, 255, 255, 0.04);
+    --accent: #D4885A;
+    --accent-hover: #E09A6C;
+    --accent-tint: rgba(212, 136, 90, 0.12);
+    --green: #6FA472;
+    --green-tint: rgba(111, 164, 114, 0.12);
+    --red: #D4715F;
+    --red-tint: rgba(212, 113, 95, 0.1);
+    --orange: #E5A035;
+    --orange-tint: rgba(229, 160, 53, 0.1);
+    --shadow: none;
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.3);
+  }
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+               "Helvetica Neue", "Hiragino Sans GB", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-size: 15px; line-height: 1.55;
+  color: var(--text); background: var(--bg);
+}
+
+::selection { background: var(--accent-tint); color: var(--accent); }
+
+/* ── Top Bar ──────────────────────────────────────────── */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--topbar-h);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--sep);
+  z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.topbar-inner {
+  width: 100%; max-width: 920px;
+  padding: 0 30px;
+  display: flex; align-items: center; gap: 32px;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  user-select: none; flex-shrink: 0;
+}
+.brand-icon {
+  width: 28px; height: 28px; border-radius: 7px;
+  background: linear-gradient(135deg, #C2703B 0%, #D4885A 100%);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.brand-icon svg { width: 15px; height: 15px; color: #fff; }
+.brand-name {
+  font-size: 16px; font-weight: 700;
+  letter-spacing: -0.3px; color: var(--text);
+}
+.nav-tabs {
+  display: flex; gap: 4px;
+}
+.tab {
+  padding: 6px 16px; border-radius: 20px;
+  font-family: inherit; font-size: 14px; font-weight: 500;
+  color: var(--text-2); background: none;
+  border: none; cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.tab:hover { background: var(--bg-hover); color: var(--text); }
+.tab.active {
+  background: var(--accent-tint); color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Main Content ─────────────────────────────────────── */
+.main {
+  padding-top: var(--topbar-h);
+  min-height: 100vh;
+}
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 30px 80px;
+}
+
+/* ── Page Header ──────────────────────────────────────── */
+.page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 28px;
+}
+.page-title {
+  font-size: 24px; font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.page-actions {
+  display: flex; gap: 8px; align-items: center;
+}
+
+/* ── Buttons ──────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: none; cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 500;
+  border-radius: 20px;
+  padding: 7px 18px;
+  transition: background 150ms ease, opacity 100ms ease, transform 80ms ease;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.35; pointer-events: none; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary {
+  background: var(--bg-surface); color: var(--text-2);
+  border: 1px solid var(--sep);
+}
+.btn-secondary:hover { background: var(--bg-hover); color: var(--text); }
+.btn-ghost { background: transparent; color: var(--text-2); padding: 7px 14px; }
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
+.btn-danger { background: transparent; color: var(--red); padding: 7px 14px; font-weight: 600; }
+.btn-danger:hover { background: var(--red-tint); }
+
+.btn-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 600ms linear infinite;
+}
+
+/* ── Stats Row ────────────────────────────────────────── */
+.stats-row {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 12px; margin-bottom: 28px;
+}
+.stat-card {
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+}
+.stat-label {
+  font-size: 12px; font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.3px;
+  margin-bottom: 6px;
+}
+.stat-value {
+  font-size: 26px; font-weight: 700;
+  letter-spacing: -0.8px;
+  line-height: 1.1;
+}
+.stat-value .stat-unit {
+  font-size: 14px; font-weight: 500;
+  color: var(--text-2); margin-left: 2px;
+}
+.stat-sub {
+  font-size: 12px; color: var(--text-3);
+  margin-top: 4px;
+}
+
+/* ── List Header ──────────────────────────────────────── */
+.list-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; padding: 0 2px;
+}
+.list-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.2px;
+}
+.sort-btn {
+  font-size: 12px; font-weight: 500;
+  color: var(--text-3); background: none;
+  border: none; cursor: pointer;
+  font-family: inherit;
+  padding: 4px 10px; border-radius: 12px;
+  transition: background 150ms ease, color 150ms ease;
+}
+.sort-btn:hover { background: var(--bg-hover); color: var(--text-2); }
+.sort-btn.active { background: var(--accent-tint); color: var(--accent); }
+
+/* ── Account List ─────────────────────────────────────── */
+.account-list {
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.account-list:empty { display: none; }
+
+.account-row {
+  display: flex; align-items: center;
+  padding: 16px 20px; gap: 16px;
+  position: relative;
+  transition: background 100ms ease;
+  border-left: 3px solid transparent;
+}
+.account-row:hover { background: var(--bg-hover); }
+.account-row + .account-row::before {
+  content: ''; position: absolute;
+  top: 0; left: 20px; right: 20px;
+  height: 1px; background: var(--sep);
+}
+
+.account-row.st-checking,
+.account-row.st-refreshing { border-left-color: var(--accent); }
+.account-row.st-success { border-left-color: var(--green); }
+.account-row.st-failed { border-left-color: var(--red); }
+.account-row.st-logging-in { border-left-color: var(--orange); }
+.account-row.st-logged-in { border-left-color: var(--green); }
+
+.account-main { flex: 1; min-width: 0; }
+.account-name {
+  font-size: 15px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-bottom: 2px;
+}
+.account-meta {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+}
+.status-label {
+  font-weight: 500;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.status-label.idle { color: var(--text-3); }
+.status-label.checking,
+.status-label.refreshing { color: var(--accent); }
+.status-label.success { color: var(--green); }
+.status-label.failed { color: var(--red); }
+.status-label.logging-in { color: var(--orange); }
+.status-label.logged-in { color: var(--green); }
+.status-label.no-session { color: var(--text-3); }
+.status-label.login-failed { color: var(--red); }
+.meta-time { color: var(--text-3); font-size: 12px; }
+
+.account-balance-col {
+  font-size: 15px; font-weight: 600;
+  color: var(--text);
+  min-width: 72px; text-align: right;
+  flex-shrink: 0;
+}
+.account-balance-col.has-balance { color: var(--green); }
+
+.account-actions {
+  display: flex; align-items: center; gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ── Row Action Buttons ───────────────────────────────── */
+.btn-action {
+  font-size: 13px; font-weight: 500;
+  padding: 5px 14px; border-radius: 14px;
+  border: none; cursor: pointer;
+  font-family: inherit;
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+.btn-action:active { transform: scale(0.95); }
+.btn-action.default {
+  background: var(--fill); color: var(--text-2);
+  border: 1px solid var(--sep);
+}
+.btn-action.default:hover { background: var(--bg-active); color: var(--text); }
+.btn-action.setup {
+  background: var(--accent-tint); color: var(--accent); font-weight: 600;
+}
+.btn-action.setup:hover { background: rgba(194,112,59,0.15); }
+.btn-action.ok {
+  background: var(--green-tint); color: var(--green);
+  pointer-events: none;
+}
+.btn-action.fail {
+  background: var(--red-tint); color: var(--red);
+}
+.btn-action.fail:hover { background: rgba(196,91,74,0.12); }
+.btn-action:disabled { opacity: 0.35; pointer-events: none; }
+
+.btn-remove {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: transparent; color: var(--text-3);
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  font-family: inherit;
+}
+.account-row:hover .btn-remove { opacity: 1; }
+.btn-remove:hover { background: var(--red-tint); color: var(--red); }
+.btn-remove svg { width: 12px; height: 12px; }
+
+.row-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid var(--fill);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 600ms linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Confirm Delete ───────────────────────────────────── */
+.confirm-row {
+  display: flex; align-items: center;
+  padding: 14px 20px; gap: 14px;
+  background: var(--red-tint);
+  animation: slideDown 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.confirm-msg {
+  flex: 1; font-size: 14px; color: var(--text-2);
+}
+.confirm-msg strong { color: var(--text); font-weight: 600; }
+.confirm-btns { display: flex; gap: 8px; }
+
+/* ── Empty State ──────────────────────────────────────── */
+.empty-state {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 80px 24px; text-align: center;
+}
+.empty-icon {
+  width: 64px; height: 64px;
+  border-radius: 16px;
+  background: var(--fill);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 18px;
+}
+.empty-icon svg { width: 28px; height: 28px; color: var(--text-3); }
+.empty-title {
+  font-size: 18px; font-weight: 700;
+  margin-bottom: 8px;
+}
+.empty-desc {
+  font-size: 14px; color: var(--text-2);
+  margin-bottom: 24px; max-width: 280px;
+  line-height: 1.6;
+}
+
+/* ── Activity ─────────────────────────────────────────── */
+.view { display: none; }
+.view.active { display: block; }
+
+.activity-group { margin-bottom: 24px; }
+.activity-date {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px; padding: 0 2px;
+}
+.activity-list {
+  background: var(--bg-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.activity-entry {
+  display: flex; align-items: center;
+  padding: 12px 20px; gap: 14px;
+  font-size: 14px;
+  position: relative;
+}
+.activity-entry + .activity-entry::before {
+  content: ''; position: absolute;
+  top: 0; left: 20px; right: 20px;
+  height: 1px; background: var(--sep);
+}
+.activity-time {
+  color: var(--text-3); width: 56px;
+  flex-shrink: 0; font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.activity-name {
+  font-weight: 600; width: 130px; flex-shrink: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.activity-result {
+  flex: 1; color: var(--text-2); font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.activity-badge {
+  font-size: 12px; font-weight: 600;
+  padding: 2px 10px; border-radius: 10px;
+  flex-shrink: 0;
+}
+.activity-badge.success { background: var(--green-tint); color: var(--green); }
+.activity-badge.failed { background: var(--red-tint); color: var(--red); }
+.activity-badge.skipped { background: var(--fill); color: var(--text-3); }
+
+.activity-empty {
+  text-align: center; padding: 80px 24px;
+  color: var(--text-3); font-size: 15px;
+}
+
+/* ── Toasts ───────────────────────────────────────────── */
+.toast-container {
+  position: fixed; top: 64px; right: 20px;
+  z-index: 200;
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--sep);
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 13px; font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  transform: translateX(120%);
+  transition: transform 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 200ms ease;
+  pointer-events: auto;
+  max-width: 320px;
+}
+.toast.visible { transform: translateX(0); }
+.toast.hiding { opacity: 0; transform: translateX(40px); }
+.toast.error { border-left: 3px solid var(--red); }
+.toast.success-toast { border-left: 3px solid var(--green); }
+
+/* ── Animations ───────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Responsive ───────────────────────────────────────── */
+@media (max-width: 640px) {
+  .container { padding: 24px 16px 60px; }
+  .topbar-inner { padding: 0 16px; }
+  .page-header { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .stats-row { grid-template-columns: 1fr; }
+  .account-row { padding: 14px 16px; }
+  .activity-entry { padding: 10px 16px; }
+  .account-balance-col { min-width: 60px; }
+}
+</style>
+</head>
+
+<body>
+<nav class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+      </div>
+      <span class="brand-name">AnyRouter</span>
+    </div>
+    <div class="nav-tabs">
+      <button class="tab active" data-view="dashboard" onclick="switchView('dashboard')">仪表盘</button>
+      <button class="tab" data-view="activity" onclick="switchView('activity')">签到记录</button>
+    </div>
+  </div>
+</nav>
+
+<main class="main">
+  <div class="container">
+    <section id="view-dashboard" class="view active">
+      <div class="page-header">
+        <h1 class="page-title">账号管理</h1>
+        <div class="page-actions" id="page-actions">
+          <button class="btn btn-secondary" id="btn-refresh" onclick="refreshBalance()">刷新余额</button>
+          <button class="btn btn-secondary" onclick="loginNew()">添加账号</button>
+          <button class="btn btn-primary" id="btn-check-all" onclick="checkAll()">全部签到</button>
+        </div>
+      </div>
+      <div id="stats-row"></div>
+      <div id="list-header-container"></div>
+      <div id="account-list" class="account-list"></div>
+      <div id="empty-state" style="display:none"></div>
+    </section>
+
+    <section id="view-activity" class="view">
+      <div class="page-header">
+        <h1 class="page-title">签到记录</h1>
+      </div>
+      <div id="activity-content"></div>
+    </section>
+  </div>
+</main>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+let accounts = [];
+let pollTimer = null;
+let confirmingDelete = null;
+let sortByBalance = false;
+
+/* ── API ──────────────────────────────────────────────── */
+async function api(path, opts = {}) {
+  try {
+    const res = await fetch(path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    return await res.json();
+  } catch {
+    toast('无法连接到服务器', 'error');
+    return null;
+  }
+}
+
+/* ── Data ─────────────────────────────────────────────── */
+async function refresh() {
+  const data = await api('/api/accounts');
+  if (data) { accounts = data; renderDashboard(); }
+}
+
+async function loadHistory() {
+  const data = await api('/api/history');
+  if (data) renderActivity(data);
+}
+
+/* ── Navigation ───────────────────────────────────────── */
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.view === name)
+  );
+  if (name === 'activity') loadHistory();
+  if (name === 'dashboard') refresh();
+}
+
+/* ── Dashboard Render ─────────────────────────────────── */
+function renderDashboard() {
+  const total = accounts.length;
+  const checked = accounts.filter(a => a.checkedToday || a.state === 'success').length;
+  const hasActive = accounts.some(a =>
+    ['checking', 'logging_in', 'refreshing'].includes(a.state)
+  );
+
+  // Calculate total balance
+  let totalBalance = 0;
+  let balanceCount = 0;
+  for (const a of accounts) {
+    if (a.balance) {
+      const num = parseFloat(a.balance.replace(/[$,]/g, ''));
+      if (!isNaN(num)) { totalBalance += num; balanceCount++; }
+    }
+  }
+
+  // Stats row
+  const statsEl = document.getElementById('stats-row');
+  if (total > 0) {
+    const balanceStr = totalBalance > 0 ? `$${totalBalance.toFixed(2)}` : '--';
+    statsEl.innerHTML = `
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">今日签到</div>
+          <div class="stat-value">${checked}<span class="stat-unit">/ ${total}</span></div>
+          <div class="stat-sub">${checked === total ? '全部完成' : `还剩 ${total - checked} 个`}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">总余额</div>
+          <div class="stat-value">${balanceStr}</div>
+          <div class="stat-sub">${balanceCount} 个账号有余额</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">账号数量</div>
+          <div class="stat-value">${total}</div>
+          <div class="stat-sub">${accounts.filter(a => a.hasSession).length} 个已登录</div>
+        </div>
+      </div>`;
+  } else {
+    statsEl.innerHTML = '';
+  }
+
+  // Check-all button state
+  const btn = document.getElementById('btn-check-all');
+  const btnRefresh = document.getElementById('btn-refresh');
+  const isRefreshing = accounts.some(a => a.state === 'refreshing');
+  const isChecking = accounts.some(a => a.state === 'checking');
+
+  if (isChecking) {
+    const doneCount = accounts.filter(a => !['checking'].includes(a.state)).length;
+    btn.innerHTML = `<span class="btn-spinner"></span> 签到中 ${doneCount}/${total}`;
+    btn.disabled = true;
+  } else {
+    btn.innerHTML = '全部签到';
+    btn.disabled = total === 0;
+  }
+
+  if (isRefreshing) {
+    btnRefresh.innerHTML = `<span class="btn-spinner" style="border-color:var(--sep);border-top-color:var(--accent)"></span> 刷新中`;
+    btnRefresh.disabled = true;
+  } else {
+    btnRefresh.innerHTML = '刷新余额';
+    btnRefresh.disabled = total === 0;
+  }
+
+  // List header
+  const lhContainer = document.getElementById('list-header-container');
+  if (total > 0) {
+    const sortClass = sortByBalance ? ' active' : '';
+    lhContainer.innerHTML = `
+      <div class="list-header">
+        <span class="list-title">账号列表</span>
+        <button class="sort-btn${sortClass}" onclick="toggleSort()">
+          ${sortByBalance ? '↓ 按余额排序' : '按余额排序'}
+        </button>
+      </div>`;
+  } else {
+    lhContainer.innerHTML = '';
+  }
+
+  // Account list
+  const list = document.getElementById('account-list');
+  const empty = document.getElementById('empty-state');
+
+  if (total === 0) {
+    list.innerHTML = '';
+    empty.style.display = '';
+    empty.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <line x1="19" y1="8" x2="19" y2="14"/>
+            <line x1="16" y1="11" x2="22" y2="11"/>
+          </svg>
+        </div>
+        <div class="empty-title">还没有账号</div>
+        <div class="empty-desc">点击下方按钮打开浏览器，登录后自动识别账号名称。</div>
+        <button class="btn btn-primary" onclick="loginNew()">打开浏览器登录</button>
+      </div>`;
+    return;
+  }
+
+  empty.style.display = 'none';
+
+  // Sort accounts if needed
+  let sorted = [...accounts];
+  if (sortByBalance) {
+    sorted.sort((a, b) => {
+      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
+      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
+      return bb - ba;
+    });
+  }
+
+  let html = '';
+  for (const a of sorted) {
+    html += confirmingDelete === a.name ? renderConfirmRow(a.name) : renderAccountRow(a);
+  }
+  list.innerHTML = html;
+
+  if (hasActive) startPolling(); else stopPolling();
+}
+
+function renderAccountRow(a) {
+  const stClass = rowStateClass(a);
+  const statusHtml = statusLabel(a);
+  const action = actionBtn(a);
+  const balanceText = a.balance || '--';
+  const balanceClass = a.balance ? ' has-balance' : '';
+  const x = `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3.5" y1="3.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="3.5" x2="3.5" y2="10.5"/></svg>`;
+
+  return `
+    <div class="account-row ${stClass}">
+      <div class="account-main">
+        <div class="account-name">${esc(a.name)}</div>
+        <div class="account-meta">
+          ${statusHtml}
+        </div>
+      </div>
+      <div class="account-balance-col${balanceClass}">${esc(balanceText)}</div>
+      <div class="account-actions">
+        ${action}
+        <button class="btn-remove" onclick="confirmDelete('${esc(a.name)}')" title="删除">${x}</button>
+      </div>
+    </div>`;
+}
+
+function renderConfirmRow(name) {
+  return `
+    <div class="confirm-row">
+      <span class="confirm-msg">确定移除 <strong>${esc(name)}</strong> 及其会话数据？</span>
+      <span class="confirm-btns">
+        <button class="btn btn-ghost" onclick="cancelDelete()">取消</button>
+        <button class="btn btn-danger" onclick="doDelete('${esc(name)}')">移除</button>
+      </span>
+    </div>`;
+}
+
+function rowStateClass(a) {
+  if (a.state === 'checking') return 'st-checking';
+  if (a.state === 'refreshing') return 'st-refreshing';
+  if (a.state === 'logging_in') return 'st-logging-in';
+  if (a.state === 'logged_in') return 'st-logged-in';
+  if (a.state === 'success' || a.checkedToday) return 'st-success';
+  if (a.state === 'failed') return 'st-failed';
+  return '';
+}
+
+function statusLabel(a) {
+  const miniSpinner = `<span class="row-spinner" style="width:13px;height:13px;border-width:1.5px"></span>`;
+  if (a.state === 'checking') return `<span class="status-label checking">${miniSpinner} 签到中</span>`;
+  if (a.state === 'refreshing') return `<span class="status-label refreshing">${miniSpinner} 刷新余额中</span>`;
+  if (a.state === 'logging_in') return `<span class="status-label logging-in">等待登录</span>`;
+  if (a.state === 'logged_in') return `<span class="status-label logged-in">已登录</span>`;
+  if (a.state === 'login_failed') return `<span class="status-label login-failed">登录失败</span>`;
+  if (a.state === 'success') return `<span class="status-label success">${esc(a.message || '签到成功')}</span>`;
+  if (a.state === 'failed') return `<span class="status-label failed">${esc(a.message || '签到失败')}</span>`;
+  if (!a.hasSession) return `<span class="status-label no-session">未登录</span>`;
+  if (a.checkedToday) return `<span class="status-label success">今日已签到</span><span class="meta-time">${fmtTime(a.lastCheckin)}</span>`;
+  if (a.lastCheckin) return `<span class="status-label idle">待签到</span><span class="meta-time">上次 ${fmtTime(a.lastCheckin)}</span>`;
+  return `<span class="status-label idle">待签到</span>`;
+}
+
+function actionBtn(a) {
+  const n = esc(a.name);
+  if (a.state === 'checking' || a.state === 'refreshing') return '<span class="row-spinner"></span>';
+  if (a.state === 'logging_in') return '<button class="btn-action default" disabled>等待中</button>';
+  if (!a.hasSession && a.state !== 'logged_in')
+    return `<button class="btn-action setup" onclick="doLogin('${n}')">去登录</button>`;
+  if (a.state === 'success' || a.checkedToday)
+    return '<button class="btn-action ok">已完成</button>';
+  if (a.state === 'failed')
+    return `<button class="btn-action fail" onclick="doCheckin('${n}')">重试</button>`;
+  return `<button class="btn-action default" onclick="doCheckin('${n}')">签到</button>`;
+}
+
+/* ── Activity Render ──────────────────────────────────── */
+function renderActivity(history) {
+  const el = document.getElementById('activity-content');
+  if (!history || !history.length) {
+    el.innerHTML = '<div class="activity-empty">暂无签到记录</div>';
+    return;
+  }
+  const groups = {};
+  for (const e of history) {
+    const d = e.time.slice(0, 10);
+    (groups[d] ||= []).push(e);
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  let html = '';
+  for (const [ds, entries] of Object.entries(groups)) {
+    let label = ds;
+    if (ds === today) label = '今天';
+    else if (ds === yesterday) label = '昨天';
+    else label = new Date(ds + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
+
+    html += `<div class="activity-group"><div class="activity-date">${label}</div><div class="activity-list">`;
+    for (const e of entries) {
+      const bc = e.status === 'success' ? 'success' : e.status === 'failed' ? 'failed' : 'skipped';
+      const bt = e.status === 'success' ? '成功' : e.status === 'failed' ? '失败' : '跳过';
+      html += `
+        <div class="activity-entry">
+          <span class="activity-time">${fmtTime(e.time)}</span>
+          <span class="activity-name">${esc(e.account)}</span>
+          <span class="activity-result">${esc(e.message || '')}</span>
+          <span class="activity-badge ${bc}">${bt}</span>
+        </div>`;
+    }
+    html += '</div></div>';
+  }
+  el.innerHTML = html;
+}
+
+/* ── Actions ──────────────────────────────────────────── */
+async function checkAll() {
+  const res = await api('/api/checkin', { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.ok) {
+    toast(`正在签到 ${res.count} 个账号...`);
+    startPolling(); refresh();
+  } else if (res.error) {
+    toast(res.error, 'error');
+  }
+}
+
+async function doCheckin(name) {
+  const res = await api('/api/checkin/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  startPolling(); refresh();
+}
+
+async function doLogin(name) {
+  const res = await api('/api/login/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  toast(`正在为「${name}」打开浏览器...`);
+  startPolling(); refresh();
+}
+
+async function loginNew() {
+  const res = await api('/api/login-new', { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  toast('浏览器已打开，请登录后关闭窗口');
+  startPolling(); refresh();
+}
+
+async function refreshBalance() {
+  // Send current display order so backend processes in the same sequence
+  let sorted = [...accounts];
+  if (sortByBalance) {
+    sorted.sort((a, b) => {
+      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
+      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
+      return bb - ba;
+    });
+  }
+  const order = sorted.map(a => a.name);
+  const res = await api('/api/refresh-balance', { method: 'POST', body: JSON.stringify({ order }) });
+  if (!res) return;
+  if (res.ok) {
+    toast(`正在刷新 ${res.count} 个账号的余额...`);
+    startPolling(); refresh();
+  } else if (res.error) {
+    toast(res.error, 'error');
+  }
+}
+
+async function refreshBalanceOne(name) {
+  const res = await api('/api/refresh-balance/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  startPolling(); refresh();
+}
+
+function toggleSort() {
+  sortByBalance = !sortByBalance;
+  renderDashboard();
+}
+
+function confirmDelete(name) { confirmingDelete = name; renderDashboard(); }
+function cancelDelete() { confirmingDelete = null; renderDashboard(); }
+async function doDelete(name) {
+  const res = await api('/api/accounts/' + encodeURIComponent(name), { method: 'DELETE' });
+  if (!res) return;
+  confirmingDelete = null;
+  toast(`已移除「${name}」`);
+  await refresh();
+}
+
+/* ── Polling ──────────────────────────────────────────── */
+function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 1200); }
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+/* ── Helpers ──────────────────────────────────────────── */
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
+  catch { return ''; }
+}
+function toast(msg, type = '') {
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  requestAnimationFrame(() => el.classList.add('visible'));
+  setTimeout(() => { el.classList.add('hiding'); setTimeout(() => el.remove(), 300); }, 3000);
+}
+
+/* ── Init ─────────────────────────────────────────────── */
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+logs/
+
+# Sensitive data - don't commit
+data/profiles/
+data/history.json
+config/accounts.json
+
+data/debug/
+
+# Claude Code
+.claude/
