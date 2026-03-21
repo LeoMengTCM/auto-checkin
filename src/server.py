@@ -127,6 +127,14 @@ def checked_today(name):
     return False
 
 
+def _find_last_history(name):
+    """Find the most recent history entry for an account that has a balance."""
+    for entry in load_history():
+        if entry["account"] == name and entry.get("balance"):
+            return entry
+    return None
+
+
 def set_status(name, state, message="", balance=None):
     with _lock:
         entry = {
@@ -161,9 +169,9 @@ DETECT_TOAST_JS = r"""
         if (rect.width === 0 && rect.height === 0) continue;
 
         if (/签到/.test(text)) {
-            const isSuccess = /成功|获得|领取/.test(text);
-            const isFail = /失败|错误|已签|重复/.test(text);
-            return { found: true, text, type: isFail ? 'fail' : (isSuccess ? 'success' : 'unknown') };
+            const isSuccess = /成功|获得|领取|\$\d/.test(text);
+            const isFail = /失败|错误|重复/.test(text);
+            return { found: true, text, type: isSuccess ? 'success' : (isFail ? 'fail' : 'unknown') };
         }
     }
 
@@ -381,6 +389,16 @@ def do_checkin(name, url, headless=True, timeout=30000):
         append_history({"account": name, "time": datetime.now().isoformat(), "status": "skipped", "message": "未保存会话"})
         return
 
+    # Get previous balance for comparison
+    prev_balance = None
+    with _lock:
+        prev = _account_status.get(name, {})
+        prev_balance = prev.get("balance")
+    if not prev_balance:
+        last = _find_last_history(name)
+        if last:
+            prev_balance = last.get("balance")
+
     profile_dir = get_profile_dir(name)
     balance = None
     try:
@@ -399,11 +417,24 @@ def do_checkin(name, url, headless=True, timeout=30000):
                 if success or "过期" in message or "登录" in message:
                     break
 
-            # Extract balance after check-in
-            if success:
-                balance = extract_balance(page)
-                if balance:
-                    message = f"{message} (余额: {balance})"
+            # Always extract balance (for comparison even on "failure")
+            balance = extract_balance(page)
+
+            # If toast detection failed but balance increased, count as success
+            if not success and balance and prev_balance:
+                try:
+                    new_val = float(balance.replace("$", "").replace(",", ""))
+                    old_val = float(prev_balance.replace("$", "").replace(",", ""))
+                    if new_val > old_val:
+                        gained = new_val - old_val
+                        username = extract_username(page) or name
+                        success = True
+                        message = f"已登录: {username} (余额增加 ${gained:.2f}，签到成功)"
+                except (ValueError, AttributeError):
+                    pass
+
+            if success and balance:
+                message = f"{message} (余额: {balance})"
 
             ctx.close()
 
@@ -412,8 +443,8 @@ def do_checkin(name, url, headless=True, timeout=30000):
             append_history({"account": name, "time": datetime.now().isoformat(), "status": "success", "message": message, "balance": balance})
             log.info(f"[{name}] 签到成功 - {message}")
         else:
-            set_status(name, "failed", message)
-            append_history({"account": name, "time": datetime.now().isoformat(), "status": "failed", "message": message})
+            set_status(name, "failed", message, balance=balance)
+            append_history({"account": name, "time": datetime.now().isoformat(), "status": "failed", "message": message, "balance": balance})
             log.warning(f"[{name}] 签到失败 - {message}")
 
     except Exception as e:
@@ -798,11 +829,21 @@ def checkin_all():
     if _busy:
         return jsonify({"error": "Already running"}), 409
     config = load_config()
-    accounts = [a for a in config["accounts"] if has_session(a["name"])]
-    if not accounts:
+    acc_map = {a["name"]: a for a in config["accounts"] if has_session(a["name"])}
+    if not acc_map:
         return jsonify({"error": "没有可签到的账号（请先登录）"}), 400
     headless = config.get("headless", True)
     timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
+
+    # Frontend can send preferred processing order
+    data = request.get_json(silent=True) or {}
+    order = data.get("order")
+    if order and isinstance(order, list):
+        accounts = [acc_map[n] for n in order if n in acc_map]
+        seen = {a["name"] for a in accounts}
+        accounts += [a for a in acc_map.values() if a["name"] not in seen]
+    else:
+        accounts = list(acc_map.values())
 
     def run():
         global _busy

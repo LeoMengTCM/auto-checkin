@@ -894,7 +894,17 @@ function renderActivity(history) {
 
 /* ── Actions ──────────────────────────────────────────── */
 async function checkAll() {
-  const res = await api('/api/checkin', { method: 'POST', body: JSON.stringify({}) });
+  // Send current display order so backend processes in the same sequence
+  let sorted = [...accounts];
+  if (sortByBalance) {
+    sorted.sort((a, b) => {
+      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
+      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
+      return bb - ba;
+    });
+  }
+  const order = sorted.map(a => a.name);
+  const res = await api('/api/checkin', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
   if (res.ok) {
     toast(`正在签到 ${res.count} 个账号...`);
