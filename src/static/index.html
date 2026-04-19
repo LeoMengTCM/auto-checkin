@@ -249,7 +249,9 @@ html, body {
 .account-row.st-success { border-left-color: var(--green); }
 .account-row.st-failed { border-left-color: var(--red); }
 .account-row.st-logging-in { border-left-color: var(--orange); }
+.account-row.st-inspecting { border-left-color: var(--orange); }
 .account-row.st-logged-in { border-left-color: var(--green); }
+.account-row.st-uncertain { border-left-color: var(--orange); }
 
 .account-main { flex: 1; min-width: 0; }
 .account-name {
@@ -271,9 +273,12 @@ html, body {
 .status-label.success { color: var(--green); }
 .status-label.failed { color: var(--red); }
 .status-label.logging-in { color: var(--orange); }
+.status-label.inspecting { color: var(--orange); }
 .status-label.logged-in { color: var(--green); }
+.status-label.uncertain { color: var(--orange); }
 .status-label.no-session { color: var(--text-3); }
 .status-label.login-failed { color: var(--red); }
+.status-label.inspect-failed { color: var(--red); }
 .meta-time { color: var(--text-3); font-size: 12px; }
 
 .account-balance-col {
@@ -319,6 +324,20 @@ html, body {
 .btn-action.fail:hover { background: rgba(196,91,74,0.12); }
 .btn-action:disabled { opacity: 0.35; pointer-events: none; }
 
+.btn-open-browser {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--sep);
+  cursor: pointer;
+  background: var(--fill); color: var(--text-2);
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  flex-shrink: 0;
+}
+.btn-open-browser:hover { background: var(--bg-active); color: var(--text); }
+.btn-open-browser:active { transform: scale(0.96); }
+.btn-open-browser:disabled { opacity: 0.35; pointer-events: none; }
+.btn-open-browser svg { width: 14px; height: 14px; }
+
 .btn-remove {
   width: 26px; height: 26px;
   display: flex; align-items: center; justify-content: center;
@@ -331,6 +350,25 @@ html, body {
 .account-row:hover .btn-remove { opacity: 1; }
 .btn-remove:hover { background: var(--red-tint); color: var(--red); }
 .btn-remove svg { width: 12px; height: 12px; }
+
+.btn-edit {
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: transparent; color: var(--text-3);
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  font-family: inherit;
+}
+.account-row:hover .btn-edit { opacity: 1; }
+.btn-edit:hover { background: var(--accent-tint); color: var(--accent); }
+.btn-edit svg { width: 13px; height: 13px; }
+
+.account-note {
+  font-size: 12px; color: var(--text-3);
+  margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .row-spinner {
   width: 18px; height: 18px;
@@ -353,6 +391,31 @@ html, body {
 }
 .confirm-msg strong { color: var(--text); font-weight: 600; }
 .confirm-btns { display: flex; gap: 8px; }
+
+/* ── Edit Row ─────────────────────────────────────────── */
+.edit-row {
+  display: flex; align-items: center;
+  padding: 14px 20px; gap: 12px;
+  background: var(--accent-tint);
+  animation: slideDown 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  flex-wrap: wrap;
+}
+.edit-fields {
+  flex: 1; min-width: 200px;
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.edit-input {
+  padding: 6px 10px;
+  border: 1px solid var(--sep); border-radius: var(--radius-sm);
+  background: var(--bg-surface); color: var(--text);
+  font-family: inherit; font-size: 14px; outline: none;
+  transition: border-color 120ms ease;
+  min-width: 0;
+}
+.edit-input:focus { border-color: var(--accent); }
+.edit-input.name { flex: 0 1 160px; }
+.edit-input.note { flex: 2 1 180px; }
+.edit-btns { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* ── Empty State ──────────────────────────────────────── */
 .empty-state {
@@ -426,6 +489,7 @@ html, body {
 .activity-badge.success { background: var(--green-tint); color: var(--green); }
 .activity-badge.failed { background: var(--red-tint); color: var(--red); }
 .activity-badge.skipped { background: var(--fill); color: var(--text-3); }
+.activity-badge.uncertain { background: rgba(196, 139, 74, 0.16); color: var(--orange); }
 
 .activity-empty {
   text-align: center; padding: 80px 24px;
@@ -615,6 +679,7 @@ html, body {
 let accounts = [];
 let pollTimer = null;
 let confirmingDelete = null;
+let editingAccount = null;
 let sortByBalance = true;
 
 /* ── API ──────────────────────────────────────────────── */
@@ -643,6 +708,12 @@ async function loadHistory() {
   if (data) renderActivity(data);
 }
 
+function getSortedAccounts() {
+  if (!sortByBalance) return [...accounts];
+  const balanceNum = a => a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
+  return [...accounts].sort((a, b) => balanceNum(b) - balanceNum(a));
+}
+
 /* ── Navigation ───────────────────────────────────────── */
 function switchView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -659,7 +730,7 @@ function renderDashboard() {
   const total = accounts.length;
   const checked = accounts.filter(a => a.checkedToday || a.state === 'success').length;
   const hasActive = accounts.some(a =>
-    ['checking', 'logging_in', 'refreshing'].includes(a.state)
+    ['checking', 'logging_in', 'refreshing', 'inspecting'].includes(a.state)
   );
 
   // Calculate total balance
@@ -762,21 +833,54 @@ function renderDashboard() {
 
   empty.style.display = 'none';
 
-  // Sort accounts if needed
-  let sorted = [...accounts];
-  if (sortByBalance) {
-    sorted.sort((a, b) => {
-      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
-      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
-      return bb - ba;
-    });
+  const sorted = getSortedAccounts();
+
+  // Snapshot in-progress edit form state so polling re-renders don't wipe user input
+  let editSnapshot = null;
+  if (editingAccount) {
+    const prev = document.querySelector('.edit-row');
+    if (prev) {
+      const pn = prev.querySelector('[data-edit-name]');
+      const pt = prev.querySelector('[data-edit-note]');
+      const ae = document.activeElement;
+      editSnapshot = {
+        origName: prev.dataset.origName,
+        nameVal: pn.value,
+        noteVal: pt.value,
+        focus: ae === pn ? 'name' : ae === pt ? 'note' : null,
+        selStart: ae && ae.selectionStart != null ? ae.selectionStart : 0,
+        selEnd: ae && ae.selectionEnd != null ? ae.selectionEnd : 0,
+      };
+    }
   }
 
   let html = '';
   for (const a of sorted) {
-    html += confirmingDelete === a.name ? renderConfirmRow(a.name) : renderAccountRow(a);
+    if (editingAccount === a.name) html += renderEditRow(a);
+    else if (confirmingDelete === a.name) html += renderConfirmRow(a.name);
+    else html += renderAccountRow(a);
   }
   list.innerHTML = html;
+
+  if (editingAccount) {
+    const row = document.querySelector('.edit-row');
+    if (row) {
+      const nameEl = row.querySelector('[data-edit-name]');
+      const noteEl = row.querySelector('[data-edit-note]');
+      if (editSnapshot && editSnapshot.origName === editingAccount) {
+        nameEl.value = editSnapshot.nameVal;
+        noteEl.value = editSnapshot.noteVal;
+        if (editSnapshot.focus) {
+          const target = editSnapshot.focus === 'name' ? nameEl : noteEl;
+          target.focus();
+          try { target.setSelectionRange(editSnapshot.selStart, editSnapshot.selEnd); } catch {}
+        }
+      } else {
+        nameEl.focus();
+        nameEl.select();
+      }
+    }
+  }
 
   if (hasActive) startPolling(); else stopPolling();
 }
@@ -785,21 +889,29 @@ function renderAccountRow(a) {
   const stClass = rowStateClass(a);
   const statusHtml = statusLabel(a);
   const action = actionBtn(a);
+  const browserAction = browserBtn(a);
   const balanceText = a.balance || '--';
   const balanceClass = a.balance ? ' has-balance' : '';
   const x = `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3.5" y1="3.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="3.5" x2="3.5" y2="10.5"/></svg>`;
+  const pencil = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  const noteHtml = a.note ? `<div class="account-note" title="${esc(a.note)}">${esc(a.note)}</div>` : '';
+  const canRefresh = a.hasSession && !['checking','refreshing','logging_in','inspecting'].includes(a.state);
+  const refreshBtn = canRefresh ? `<button class="btn-refresh-one" onclick="event.stopPropagation();refreshBalanceOne('${esc(a.name)}')" title="刷新余额"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>` : '';
 
   return `
     <div class="account-row ${stClass}">
       <div class="account-main">
         <div class="account-name">${esc(a.name)}</div>
+        ${noteHtml}
         <div class="account-meta">
           ${statusHtml}
         </div>
       </div>
-      <div class="account-balance-col${balanceClass}">${esc(balanceText)}${a.hasSession && !['checking','refreshing','logging_in'].includes(a.state) ? `<button class="btn-refresh-one" onclick="event.stopPropagation();refreshBalanceOne('${esc(a.name)}')" title="刷新余额"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>` : ''}</div>
+      <div class="account-balance-col${balanceClass}">${esc(balanceText)}${refreshBtn}</div>
       <div class="account-actions">
+        ${browserAction}
         ${action}
+        <button class="btn-edit" onclick="startEdit('${esc(a.name)}')" title="编辑账号名 / 备注">${pencil}</button>
         <button class="btn-remove" onclick="confirmDelete('${esc(a.name)}')" title="删除">${x}</button>
       </div>
     </div>`;
@@ -816,13 +928,31 @@ function renderConfirmRow(name) {
     </div>`;
 }
 
+function renderEditRow(a) {
+  const n = esc(a.name);
+  const note = esc(a.note || '');
+  return `
+    <div class="edit-row" data-orig-name="${n}">
+      <div class="edit-fields">
+        <input type="text" class="edit-input name" data-edit-name value="${n}" placeholder="账号名" autocomplete="off" maxlength="100" onkeydown="onEditKey(event)">
+        <input type="text" class="edit-input note" data-edit-note value="${note}" placeholder="备注（可选）" autocomplete="off" maxlength="200" onkeydown="onEditKey(event)">
+      </div>
+      <div class="edit-btns">
+        <button class="btn btn-ghost" onclick="cancelEdit()">取消</button>
+        <button class="btn btn-primary" onclick="saveEdit()">保存</button>
+      </div>
+    </div>`;
+}
+
 function rowStateClass(a) {
   if (a.state === 'checking') return 'st-checking';
   if (a.state === 'refreshing') return 'st-refreshing';
   if (a.state === 'logging_in') return 'st-logging-in';
+  if (a.state === 'inspecting') return 'st-inspecting';
   if (a.state === 'logged_in') return 'st-logged-in';
+  if (a.state === 'uncertain') return 'st-uncertain';
   if (a.state === 'success' || a.checkedToday) return 'st-success';
-  if (a.state === 'failed') return 'st-failed';
+  if (a.state === 'failed' || a.state === 'inspect_failed') return 'st-failed';
   return '';
 }
 
@@ -831,8 +961,11 @@ function statusLabel(a) {
   if (a.state === 'checking') return `<span class="status-label checking">${miniSpinner} 签到中</span>`;
   if (a.state === 'refreshing') return `<span class="status-label refreshing">${miniSpinner} 刷新余额中</span>`;
   if (a.state === 'logging_in') return `<span class="status-label logging-in">等待登录</span>`;
+  if (a.state === 'inspecting') return `<span class="status-label inspecting">浏览器已打开</span>`;
   if (a.state === 'logged_in') return `<span class="status-label logged-in">已登录</span>`;
+  if (a.state === 'uncertain') return `<span class="status-label uncertain">${esc(a.message || '待确认')}</span>`;
   if (a.state === 'login_failed') return `<span class="status-label login-failed">登录失败</span>`;
+  if (a.state === 'inspect_failed') return `<span class="status-label inspect-failed">${esc(a.message || '打开失败')}</span>`;
   if (a.state === 'success') return `<span class="status-label success">${esc(a.message || '签到成功')}</span>`;
   if (a.state === 'failed') return `<span class="status-label failed">${esc(a.message || '签到失败')}</span>`;
   if (!a.hasSession) return `<span class="status-label no-session">未登录</span>`;
@@ -841,14 +974,26 @@ function statusLabel(a) {
   return `<span class="status-label idle">待签到</span>`;
 }
 
+function browserBtn(a) {
+  const n = esc(a.name);
+  const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4"/></svg>`;
+  if (!a.hasSession) return '';
+  if (a.state === 'inspecting') return `<button class="btn-open-browser" disabled title="浏览器已打开">${icon}</button>`;
+  if (['checking', 'refreshing', 'logging_in'].includes(a.state)) return '';
+  return `<button class="btn-open-browser" onclick="openBrowser('${n}')" title="打开浏览器查看">${icon}</button>`;
+}
+
 function actionBtn(a) {
   const n = esc(a.name);
   if (a.state === 'checking' || a.state === 'refreshing') return '<span class="row-spinner"></span>';
   if (a.state === 'logging_in') return '<button class="btn-action default" disabled>等待中</button>';
+  if (a.state === 'inspecting') return '<button class="btn-action default" disabled>查看中</button>';
   if (!a.hasSession && a.state !== 'logged_in')
     return `<button class="btn-action setup" onclick="doLogin('${n}')">去登录</button>`;
   if (a.state === 'success' || a.checkedToday)
     return '<button class="btn-action ok">已完成</button>';
+  if (a.state === 'uncertain')
+    return `<button class="btn-action default" onclick="doCheckin('${n}')">重试</button>`;
   if (a.state === 'failed')
     return `<button class="btn-action fail" onclick="doCheckin('${n}')">重试</button>`;
   return `<button class="btn-action default" onclick="doCheckin('${n}')">签到</button>`;
@@ -877,8 +1022,20 @@ function renderActivity(history) {
 
     html += `<div class="activity-group"><div class="activity-date">${label}</div><div class="activity-list">`;
     for (const e of entries) {
-      const bc = e.status === 'success' ? 'success' : e.status === 'failed' ? 'failed' : 'skipped';
-      const bt = e.status === 'success' ? '成功' : e.status === 'failed' ? '失败' : '跳过';
+      const bc = e.status === 'success'
+        ? 'success'
+        : e.status === 'failed'
+          ? 'failed'
+          : e.status === 'uncertain'
+            ? 'uncertain'
+            : 'skipped';
+      const bt = e.status === 'success'
+        ? '成功'
+        : e.status === 'failed'
+          ? '失败'
+          : e.status === 'uncertain'
+            ? '待确认'
+            : '跳过';
       html += `
         <div class="activity-entry">
           <span class="activity-time">${fmtTime(e.time)}</span>
@@ -894,16 +1051,7 @@ function renderActivity(history) {
 
 /* ── Actions ──────────────────────────────────────────── */
 async function checkAll() {
-  // Send current display order so backend processes in the same sequence
-  let sorted = [...accounts];
-  if (sortByBalance) {
-    sorted.sort((a, b) => {
-      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
-      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
-      return bb - ba;
-    });
-  }
-  const order = sorted.map(a => a.name);
+  const order = getSortedAccounts().map(a => a.name);
   const res = await api('/api/checkin', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
   if (res.ok) {
@@ -929,6 +1077,14 @@ async function doLogin(name) {
   startPolling(); refresh();
 }
 
+async function openBrowser(name) {
+  const res = await api('/api/open-browser/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  toast(`已为「${name}」打开浏览器窗口`);
+  startPolling(); refresh();
+}
+
 async function loginNew() {
   const res = await api('/api/login-new', { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
@@ -938,16 +1094,7 @@ async function loginNew() {
 }
 
 async function refreshBalance() {
-  // Send current display order so backend processes in the same sequence
-  let sorted = [...accounts];
-  if (sortByBalance) {
-    sorted.sort((a, b) => {
-      const ba = a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
-      const bb = b.balance ? parseFloat(b.balance.replace(/[$,]/g, '')) : -1;
-      return bb - ba;
-    });
-  }
-  const order = sorted.map(a => a.name);
+  const order = getSortedAccounts().map(a => a.name);
   const res = await api('/api/refresh-balance', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
   if (res.ok) {
@@ -970,7 +1117,7 @@ function toggleSort() {
   renderDashboard();
 }
 
-function confirmDelete(name) { confirmingDelete = name; renderDashboard(); }
+function confirmDelete(name) { confirmingDelete = name; editingAccount = null; renderDashboard(); }
 function cancelDelete() { confirmingDelete = null; renderDashboard(); }
 async function doDelete(name) {
   const res = await api('/api/accounts/' + encodeURIComponent(name), { method: 'DELETE' });
@@ -980,12 +1127,52 @@ async function doDelete(name) {
   await refresh();
 }
 
+/* ── Edit Account ─────────────────────────────────────── */
+function startEdit(name) {
+  editingAccount = name;
+  confirmingDelete = null;
+  renderDashboard();
+}
+function cancelEdit() { editingAccount = null; renderDashboard(); }
+function onEditKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+}
+async function saveEdit() {
+  const row = document.querySelector('.edit-row');
+  if (!row) return;
+  const origName = row.dataset.origName;
+  const newName = row.querySelector('[data-edit-name]').value.trim();
+  const newNote = row.querySelector('[data-edit-note]').value.trim();
+  if (!newName) { toast('账号名不能为空', 'error'); return; }
+
+  const body = { note: newNote };
+  if (newName !== origName) body.name = newName;
+  // If nothing changed, just close the editor
+  const orig = accounts.find(a => a.name === origName);
+  if (newName === origName && newNote === (orig?.note || '')) {
+    editingAccount = null;
+    renderDashboard();
+    return;
+  }
+
+  const res = await api('/api/accounts/' + encodeURIComponent(origName), {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  editingAccount = null;
+  toast('已保存');
+  await refresh();
+}
+
 /* ── Polling ──────────────────────────────────────────── */
 function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 1200); }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 /* ── Helpers ──────────────────────────────────────────── */
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;'); }
 function fmtTime(iso) {
   if (!iso) return '';
   try { return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }

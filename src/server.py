@@ -6,13 +6,14 @@ import shutil
 import threading
 import uuid
 import logging
+import time
 from datetime import datetime, date
 from pathlib import Path
 
 from functools import wraps
 
 from flask import Flask, jsonify, request, send_from_directory, session
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__, static_folder="static")
@@ -25,45 +26,48 @@ PROFILES_DIR = BASE_DIR / "data" / "profiles"
 HISTORY_FILE = BASE_DIR / "data" / "history.json"
 DEFAULT_URL = "https://anyrouter.top"
 DEFAULT_TIMEOUT = 30
+CHECKIN_RESULT_WAIT_MS = 20000
+CHECKIN_RESULT_POLL_MS = 500
 
 # Thread-safe status tracking
 _lock = threading.Lock()
 _account_status = {}
 _busy = False
 _refreshing = False
-
-# Common browser launch args for both login and checkin
-BROWSER_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-]
+_io_lock = threading.RLock()
+ACTIVE_ACCOUNT_STATES = {"checking", "logging_in", "refreshing", "inspecting"}
 
 
 def _launch_ctx(p, profile_dir, headless=False):
-    """Launch a persistent browser context using system Chrome."""
+    """Launch a persistent browser context using system Chrome.
+
+    Follows patchright's stealth best practices: system Chrome via channel,
+    natural viewport, no custom locale/UA/headers. Any extra fingerprinting
+    option we add here becomes a signal Cloudflare Turnstile can score.
+    """
     return p.chromium.launch_persistent_context(
         profile_dir,
         channel="chrome",
         headless=headless,
-        viewport={"width": 1280, "height": 800},
-        locale="zh-CN",
-        args=BROWSER_ARGS,
-        ignore_default_args=["--enable-automation"],
+        no_viewport=True,
     )
 
 
 # ── Config helpers ─────────────────────────────────────────
 
 def load_config():
-    if not CONFIG_FILE.exists():
-        return {"accounts": [], "headless": True, "timeout": DEFAULT_TIMEOUT}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with _io_lock:
+        if not CONFIG_FILE.exists():
+            return {"accounts": [], "headless": True, "timeout": DEFAULT_TIMEOUT}
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
 
 
 def save_config(config):
-    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    with _io_lock:
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 
@@ -85,38 +89,59 @@ def require_auth(f):
     def decorated(*args, **kwargs):
         config = load_config()
         if not config.get("password"):
-            return f(*args, **kwargs)
+            return jsonify({"error": "请先设置管理员密码"}), 403
         if not session.get("authed"):
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
 
 
+def _safe_name(name):
+    """Validate account name to prevent path traversal."""
+    if not name or not isinstance(name, str):
+        return False
+    name = name.strip()
+    if not name or len(name) > 100:
+        return False
+    # Block path traversal and special characters
+    if "/" in name or "\\" in name or "\0" in name:
+        return False
+    if name in (".", "..") or name.startswith("."):
+        return False
+    return True
+
+
 def has_session(name):
+    if not _safe_name(name):
+        return False
     d = PROFILES_DIR / name
     return d.exists() and any(d.iterdir())
 
 
 def get_profile_dir(name):
+    if not _safe_name(name):
+        raise ValueError("Invalid account name")
     d = PROFILES_DIR / name
     d.mkdir(parents=True, exist_ok=True)
     return str(d)
 
 
 def load_history():
-    if not HISTORY_FILE.exists():
-        return []
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f).get("history", [])
+    with _io_lock:
+        if not HISTORY_FILE.exists():
+            return []
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("history", [])
 
 
 def append_history(entry):
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    history = load_history()
-    history.insert(0, entry)
-    history = history[:500]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump({"history": history}, f, indent=2, ensure_ascii=False)
+    with _io_lock:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        history = load_history()
+        history.insert(0, entry)
+        history = history[:500]
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"history": history}, f, indent=2, ensure_ascii=False)
 
 
 def checked_today(name):
@@ -147,6 +172,45 @@ def set_status(name, state, message="", balance=None):
         elif name in _account_status and "balance" in _account_status[name]:
             entry["balance"] = _account_status[name]["balance"]
         _account_status[name] = entry
+
+
+def get_account_state(name):
+    with _lock:
+        return (_account_status.get(name) or {}).get("state")
+
+
+def get_account_busy_error(name):
+    state = get_account_state(name)
+    if state == "checking":
+        return "该账号正在签到"
+    if state == "logging_in":
+        return "该账号正在登录，请先关闭浏览器"
+    if state == "refreshing":
+        return "该账号正在刷新余额"
+    if state == "inspecting":
+        return "该账号浏览器已打开，请先关闭窗口"
+    return None
+
+
+def _account_or_error(name, require_session=True):
+    """Common pre-flight for per-account endpoints.
+
+    Validates name charset, checks existence, optionally requires a saved
+    session, and rejects if the account is currently busy. Returns
+    (account_dict, None) on success or (None, (response, status_code)).
+    """
+    if not _safe_name(name):
+        return None, (jsonify({"error": "账号名包含非法字符"}), 400)
+    config = load_config()
+    acc = next((a for a in config["accounts"] if a["name"] == name), None)
+    if not acc:
+        return None, (jsonify({"error": "Not found"}), 404)
+    if require_session and not has_session(name):
+        return None, (jsonify({"error": "请先登录此账号"}), 400)
+    busy = get_account_busy_error(name)
+    if busy:
+        return None, (jsonify({"error": busy}), 409)
+    return acc, None
 
 
 # ── Username extraction ────────────────────────────────────
@@ -237,6 +301,367 @@ DETECT_TOAST_JS = r"""
 })()
 """
 
+CHECKIN_MONITOR_INIT_JS = r"""
+(() => {
+    const key = '__checkinSignal';
+    const runId = window.__checkinMonitorRunId || 'default';
+    const storageKey = `__checkinSignalStore:${runId}`;
+    const existing = window[key];
+    if (existing && existing.__installed) return;
+
+    const now = Date.now();
+    const loadPersisted = () => {
+        try {
+            const raw = sessionStorage.getItem(storageKey);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== 'object') return {};
+            if (Array.isArray(parsed.events)) {
+                parsed.events = parsed.events
+                    .filter((event) => event && event.ts && (now - event.ts) < 5 * 60 * 1000)
+                    .slice(-20);
+            }
+            if (Array.isArray(parsed.network)) {
+                parsed.network = parsed.network
+                    .filter((event) => event && event.ts && (now - event.ts) < 5 * 60 * 1000)
+                    .slice(-10);
+            }
+            return parsed;
+        } catch {
+            return {};
+        }
+    };
+    const persisted = loadPersisted();
+
+    const selectors = [
+        '.semi-toast-content-text', '.semi-toast',
+        '.toast', '.notification', '.notice', '.snackbar',
+        '[class*="toast"]', '[class*="Toast"]',
+        '[class*="notification"]', '[class*="Notification"]',
+        '[class*="message"]', '[class*="Message"]',
+        '[class*="notice"]', '[class*="Notice"]',
+        '[class*="popup"]', '[class*="Popup"]',
+        '[class*="alert"]', '[class*="Alert"]',
+        '[class*="snack"]', '[class*="Snack"]',
+        '[class*="tip"]', '[class*="Tip"]',
+        '[role="alert"]', '[role="status"]',
+    ];
+
+    const state = window[key] = {
+        __installed: true,
+        events: Array.isArray(existing && existing.events) ? existing.events : (Array.isArray(persisted.events) ? persisted.events : []),
+        network: Array.isArray(existing && existing.network) ? existing.network : (Array.isArray(persisted.network) ? persisted.network : []),
+        lastStrongType: existing && existing.lastStrongType || persisted.lastStrongType || null,
+        lastStrongText: existing && existing.lastStrongText || persisted.lastStrongText || '',
+        updatedAt: existing && existing.updatedAt || persisted.updatedAt || Date.now(),
+    };
+    const seen = new Set(state.events.map(event => event.key).filter(Boolean));
+    const seenNetwork = new Set(state.network.map(event => event.key).filter(Boolean));
+
+    const persist = () => {
+        try {
+            sessionStorage.setItem(storageKey, JSON.stringify({
+                events: state.events.slice(-20),
+                network: state.network.slice(-10),
+                lastStrongType: state.lastStrongType || null,
+                lastStrongText: state.lastStrongText || '',
+                updatedAt: state.updatedAt || null,
+            }));
+        } catch {}
+    };
+
+    const normalize = (text) => (text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 150);
+
+    const signalRegex = /签到|check.?in|额度|credit|领取|已签到/i;
+    const failRegex = /失败|错误|过期|error|fail/i;
+    const successRegex = /成功|获得|领取|\$\d+|已签到/i;
+
+    const classify = (text) => {
+        const normalized = normalize(text);
+        if (!normalized) return null;
+        if (/已签到/i.test(normalized)) {
+            return { type: 'success', text: normalized };
+        }
+        if (!signalRegex.test(normalized)) return null;
+        if (failRegex.test(normalized)) {
+            return { type: 'fail', text: normalized };
+        }
+        if (successRegex.test(normalized)) {
+            return { type: 'success', text: normalized };
+        }
+        return null;
+    };
+
+    const extractSnippet = (text) => {
+        const normalized = normalize(text);
+        if (!normalized) return '';
+        const patterns = [
+            /签到成功[^。,\n]{0,60}/i,
+            /签到失败[^。,\n]{0,60}/i,
+            /已签到[^。,\n]{0,60}/i,
+            /获得\s*\$\d+(?:\.\d+)?\s*额度[^。,\n]{0,40}/i,
+        ];
+        for (const pattern of patterns) {
+            const match = normalized.match(pattern);
+            if (match) return normalize(match[0]);
+        }
+        if (/^[\[{]/.test(normalized)) {
+            return '';
+        }
+        return normalized;
+    };
+
+    const pickFirstText = (...values) => {
+        for (const value of values) {
+            if (typeof value === 'string') {
+                const normalized = normalize(value);
+                if (normalized) return normalized;
+            }
+        }
+        return '';
+    };
+
+    const parseJsonPayload = (payload, url = '') => {
+        try {
+            const data = JSON.parse(payload);
+            if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+
+            const message = pickFirstText(
+                data.message,
+                data.msg,
+                data.error,
+                data.detail,
+                data.data && data.data.message,
+                data.data && data.data.msg,
+                data.data && data.data.error,
+                data.data && data.data.detail,
+            );
+
+            const classifiedMessage = message ? classify(message) : null;
+            if (classifiedMessage) return classifiedMessage;
+
+            const success = data.success === true ||
+                data.code === 0 || data.status === 'success' || data.status === 'ok';
+            const failed = data.success === false || data.code === -1 || data.status === 'failed' || data.status === 'error';
+
+            if (success) {
+                return {
+                    type: 'success',
+                    text: extractSnippet(message) || '签到成功',
+                };
+            }
+
+            if (failed) {
+                return {
+                    type: 'fail',
+                    text: extractSnippet(message) || '签到失败',
+                };
+            }
+
+            if (/已签到/i.test(message)) {
+                return { type: 'success', text: extractSnippet(message) || '已签到' };
+            }
+        } catch {}
+        return null;
+    };
+
+    const classifyPayload = (text, url = '') => {
+        if (!text || typeof text !== 'string') return null;
+        const payload = text.slice(0, 4000);
+        const signUrl = /check.?in|sign.?in|attendance|daily|reward|credit|quota/i.test(url || '');
+        const parsedJson = parseJsonPayload(payload, url);
+        if (parsedJson) return parsedJson;
+        const snippet = extractSnippet(payload);
+        const combined = `${url || ''} ${snippet}`;
+        if (/已签到/i.test(combined)) {
+            return { type: 'success', text: snippet || '已签到' };
+        }
+        if (!(signalRegex.test(combined) || signUrl)) return null;
+        if (failRegex.test(combined)) {
+            return { type: 'fail', text: snippet || normalize(url) || '签到失败' };
+        }
+        if (successRegex.test(combined)) {
+            return { type: 'success', text: snippet || normalize(url) || '签到成功' };
+        }
+        if (signUrl && /"success"\s*:\s*true|"code"\s*:\s*0|"status"\s*:\s*"success"/i.test(payload)) {
+            return { type: 'success', text: snippet || `接口返回成功: ${normalize(url)}` };
+        }
+        return null;
+    };
+
+    const remember = (match, source) => {
+        if (!match) return;
+        const keyValue = `${match.type}:${match.text}`;
+        if (seen.has(keyValue)) return;
+        seen.add(keyValue);
+        const event = {
+            key: keyValue,
+            type: match.type,
+            text: match.text,
+            source,
+            ts: Date.now(),
+        };
+        state.events.push(event);
+        state.events = state.events.slice(-20);
+        state.updatedAt = event.ts;
+        state.lastStrongType = match.type;
+        state.lastStrongText = match.text;
+        persist();
+    };
+
+    const rememberNetwork = (match, source, url) => {
+        if (!match) return;
+        remember(match, source);
+        const keyValue = `${match.type}:${normalize(url)}:${match.text}`;
+        if (seenNetwork.has(keyValue)) return;
+        seenNetwork.add(keyValue);
+        state.network.push({
+            key: keyValue,
+            type: match.type,
+            text: match.text,
+            url: normalize(url).slice(0, 160),
+            source,
+            ts: Date.now(),
+        });
+        state.network = state.network.slice(-10);
+        persist();
+    };
+
+    const candidateElements = (root) => {
+        const candidates = [];
+        if (!(root instanceof Element)) return candidates;
+        if (root.matches && selectors.some((selector) => root.matches(selector))) {
+            candidates.push(root);
+        }
+        if (root.querySelectorAll) {
+            for (const selector of selectors) {
+                for (const node of root.querySelectorAll(selector)) {
+                    candidates.push(node);
+                }
+            }
+        }
+        return candidates;
+    };
+
+    const inspect = (node, source) => {
+        let root = node;
+        if (root && root.nodeType === Node.TEXT_NODE) {
+            root = root.parentElement;
+        }
+        if (!(root instanceof Element)) return;
+        const visited = new Set();
+        for (const element of candidateElements(root)) {
+            if (!(element instanceof Element) || visited.has(element)) continue;
+            visited.add(element);
+            const match = classify(element.innerText || element.textContent || '');
+            if (match) {
+                remember(match, source);
+            }
+        }
+    };
+
+    const scanExistingSignals = () => {
+        if (!document.documentElement) return;
+        for (const selector of selectors) {
+            for (const element of document.querySelectorAll(selector)) {
+                inspect(element, 'scan');
+            }
+        }
+    };
+
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            if (mutation.type === 'childList') {
+                for (const addedNode of mutation.addedNodes) {
+                    inspect(addedNode, 'childList');
+                }
+            } else if (mutation.type === 'characterData') {
+                inspect(mutation.target, 'characterData');
+            }
+        }
+    });
+
+    const wrapFetch = () => {
+        if (typeof window.fetch !== 'function' || window.fetch.__checkinWrapped) return;
+        const originalFetch = window.fetch.bind(window);
+        const wrappedFetch = async (...args) => {
+            const response = await originalFetch(...args);
+            try {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || response.url || '';
+                const contentType = response.headers.get('content-type') || '';
+                if (/json|text|javascript/i.test(contentType) || /check.?in|sign.?in|attendance|daily|reward|credit|quota/i.test(url)) {
+                    response.clone().text().then((text) => {
+                        const match = classifyPayload(text, url);
+                        if (match) {
+                            rememberNetwork(match, 'fetch', url);
+                        }
+                    }).catch(() => {});
+                }
+            } catch {}
+            return response;
+        };
+        wrappedFetch.__checkinWrapped = true;
+        window.fetch = wrappedFetch;
+    };
+
+    const wrapXHR = () => {
+        if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.__checkinWrapped) return;
+        const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+        if (!proto) return;
+        const originalOpen = proto.open;
+        const originalSend = proto.send;
+        proto.open = function(method, url, ...rest) {
+            this.__checkinUrl = url || '';
+            return originalOpen.call(this, method, url, ...rest);
+        };
+        proto.send = function(...args) {
+            this.addEventListener('loadend', () => {
+                try {
+                    const match = classifyPayload(this.responseText || '', this.__checkinUrl || '');
+                    if (match) {
+                        rememberNetwork(match, 'xhr', this.__checkinUrl || '');
+                    }
+                } catch {}
+            }, { once: true });
+            return originalSend.apply(this, args);
+        };
+        proto.__checkinWrapped = true;
+    };
+
+    try {
+        observer.observe(document.documentElement, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+        });
+    } catch {}
+
+    scanExistingSignals();
+    wrapFetch();
+    wrapXHR();
+    window.addEventListener('beforeunload', persist);
+    document.addEventListener('DOMContentLoaded', scanExistingSignals, { once: true });
+    window.addEventListener('load', () => setTimeout(scanExistingSignals, 0), { once: true });
+    persist();
+})();
+"""
+
+READ_CHECKIN_MONITOR_JS = r"""
+(() => {
+    const state = window.__checkinSignal || {};
+    return {
+        lastStrongType: state.lastStrongType || null,
+        lastStrongText: state.lastStrongText || '',
+        updatedAt: state.updatedAt || null,
+        events: Array.isArray(state.events) ? state.events.slice(-5) : [],
+        network: Array.isArray(state.network) ? state.network.slice(-5) : [],
+    };
+})()
+"""
+
 # JS: Extract username from localStorage (anyrouter stores user JSON there)
 EXTRACT_USERNAME_JS = r"""
 (() => {
@@ -286,62 +711,173 @@ CHECK_LOGIN_PAGE_JS = r"""
 """
 
 
-def extract_username(page):
+def extract_username(page, log_detect=False):
     """Extract username from page (primarily via localStorage)."""
     try:
         result = page.evaluate(EXTRACT_USERNAME_JS)
         if result and isinstance(result, str):
             name = result.strip()
             name = "".join(c for c in name if c not in r'\/:*?"<>|')
-            if name:
-                log.info(f"  Username detected: {name}")
+            if name and _safe_name(name):
+                if log_detect:
+                    log.info(f"  Username detected: {name}")
                 return name
     except Exception:
         pass
     return None
 
 
-def verify_checkin(page, url):
-    """Verify check-in by detecting the Semi Design success toast.
-
-    Returns (success: bool, message: str).
-    """
-    # Check 1: Is this a login page? (session expired)
+def prepare_checkin_monitor(ctx):
+    """Inject the check-in monitor before page scripts run."""
     try:
-        if page.evaluate(CHECK_LOGIN_PAGE_JS):
-            return False, "会话已过期，被重定向到登录页"
+        run_id = f"checkin_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        ctx.add_init_script(f"window.__checkinMonitorRunId = {json.dumps(run_id)};")
+        ctx.add_init_script(CHECKIN_MONITOR_INIT_JS)
     except Exception:
         pass
 
-    # Check 2: Detect check-in toast (the main check!)
+
+def read_checkin_monitor(page):
+    try:
+        result = page.evaluate(READ_CHECKIN_MONITOR_JS)
+        if isinstance(result, dict):
+            return result
+    except Exception:
+        pass
+    return {}
+
+
+def _append_balance_message(message, balance):
+    if balance:
+        return f"{message} (余额: {balance})"
+    return message
+
+
+def _build_uncertain_checkin_message(wait_seconds, username=None, balance=None):
+    if username:
+        return f"已登录: {username} (会话有效，但{wait_seconds}秒内未捕获签到结果，请手动确认)"
+    if balance:
+        return f"已进入控制台，但{wait_seconds}秒内未捕获签到结果，请手动确认"
+    return f"{wait_seconds}秒内未捕获签到结果，请手动确认"
+
+
+def _parse_balance_value(balance):
+    if not balance:
+        return None
+    try:
+        return float(balance.replace("$", "").replace(",", ""))
+    except (AttributeError, ValueError):
+        return None
+
+
+def detect_checkin_status(page, url):
+    """Inspect the current page state without waiting indefinitely."""
+    # Check 1: Is this a login page? (session expired)
+    try:
+        if page.evaluate(CHECK_LOGIN_PAGE_JS):
+            return {"state": "failed", "message": "会话已过期，被重定向到登录页"}
+    except Exception:
+        pass
+
+    # Check 2: Any short-lived signal captured by the monitor?
+    monitor = read_checkin_monitor(page)
+    if monitor.get("lastStrongType") == "success":
+        return {"state": "success", "message": monitor.get("lastStrongText", "签到成功"), "source": "monitor"}
+    if monitor.get("lastStrongType") == "fail":
+        return {"state": "failed", "message": monitor.get("lastStrongText", "签到失败"), "source": "monitor"}
+
+    # Check 3: Detect current toast/notification state
     try:
         result = page.evaluate(DETECT_TOAST_JS)
         if result and result.get("found"):
             text = result["text"]
             if result["type"] == "success":
-                return True, text
+                return {"state": "success", "message": text, "source": "current-dom"}
             elif result["type"] == "fail":
-                return False, text
+                return {"state": "failed", "message": text, "source": "current-dom"}
             else:
-                return True, f"检测到提示: {text}"
+                return {"state": "signal", "message": f"检测到提示: {text}", "source": "current-dom"}
     except Exception:
         pass
 
-    # Check 3: No toast found - check if user is logged in at all
-    username = extract_username(page)
+    # Check 4: Logged in means session is valid, but not a final success signal.
+    username = extract_username(page, log_detect=False)
     if username:
-        return True, f"已登录: {username} (未检测到签到弹窗，可能已签过)"
+        return {"state": "logged_in", "message": f"已登录: {username}", "username": username}
 
-    # Check 4: Fallback - page loaded but no login info
+    # Check 5: Fallback - page loaded but no login info
     try:
         title = page.title()
         body_length = page.evaluate("document.body?.innerText?.length || 0")
         if body_length > 100:
-            return False, f"页面已加载但未检测到登录状态 ({title})"
+            return {"state": "loaded", "message": f"页面已加载，但尚未确认签到结果 ({title})"}
     except Exception:
         pass
 
-    return False, "无法确认签到状态"
+    return {"state": "unknown", "message": "无法确认签到状态"}
+
+
+def verify_checkin(page, url):
+    """Single-shot check-in verification without treating login as final success."""
+    status = detect_checkin_status(page, url)
+    return status["state"] == "success", status["message"]
+
+
+def wait_for_checkin_result(page, url, prev_balance=None,
+                            wait_timeout_ms=CHECKIN_RESULT_WAIT_MS,
+                            poll_interval_ms=CHECKIN_RESULT_POLL_MS):
+    """Wait a bounded amount of time for a real check-in signal."""
+    try:
+        page.evaluate(CHECKIN_MONITOR_INIT_JS)
+    except Exception:
+        pass
+
+    deadline = time.monotonic() + (wait_timeout_ms / 1000)
+    last_status = {"state": "unknown", "message": "无法确认签到状态"}
+    username = None
+    wait_seconds = max(1, round(wait_timeout_ms / 1000))
+
+    while time.monotonic() < deadline:
+        status = detect_checkin_status(page, url)
+        last_status = status
+
+        if status["state"] == "success":
+            balance = extract_balance(page)
+            return "success", _append_balance_message(status["message"], balance), balance
+
+        if status["state"] == "failed":
+            balance = extract_balance(page)
+            return "failed", _append_balance_message(status["message"], balance), balance
+
+        if status["state"] == "logged_in":
+            username = status.get("username") or username
+
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            break
+        page.wait_for_timeout(min(poll_interval_ms, remaining_ms))
+
+    balance = extract_balance(page)
+    username = username or extract_username(page, log_detect=False)
+
+    if balance and prev_balance:
+        new_val = _parse_balance_value(balance)
+        old_val = _parse_balance_value(prev_balance)
+        if new_val is not None and old_val is not None and new_val > old_val:
+            gained = new_val - old_val
+            display_name = username or extract_username(page, log_detect=False) or "当前账号"
+            message = f"已登录: {display_name} (未捕获签到提醒，但余额增加 ${gained:.2f})"
+            return "success", _append_balance_message(message, balance), balance
+
+    if username:
+        message = _build_uncertain_checkin_message(wait_seconds, username=username, balance=balance)
+        return "uncertain", _append_balance_message(message, balance), balance
+
+    if balance:
+        message = _build_uncertain_checkin_message(wait_seconds, balance=balance)
+        return "uncertain", _append_balance_message(message, balance), balance
+
+    return "failed", _append_balance_message(last_status["message"], balance), balance
 
 
 # JS: Extract balance from the console page (anyrouter shows "当前余额 $xxx")
@@ -381,7 +917,66 @@ def extract_balance(page):
 
 # ── Core operations ────────────────────────────────────────
 
+def _wait_for_browser_close(ctx, page=None):
+    """Wait until the persistent browser window is closed by the user."""
+    while True:
+        try:
+            pages = ctx.pages
+            if not pages:
+                break
+            current_page = page if page in pages else pages[0]
+            current_page.wait_for_timeout(1000)
+        except Exception:
+            break
+
+
+def open_saved_session_browser(name, url):
+    """Open a visible browser for manual inspection using the saved session."""
+    if not has_session(name):
+        raise ValueError("未保存会话")
+
+    profile_dir = get_profile_dir(name)
+    console_url = url.rstrip("/") + "/console"
+    opened_url = console_url
+    balance = None
+
+    with sync_playwright() as p:
+        ctx = _launch_ctx(p, profile_dir, headless=False)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+        try:
+            page.goto(console_url, wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            opened_url = url
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+
+        try:
+            page.wait_for_timeout(1500)
+            balance = extract_balance(page)
+        except Exception:
+            pass
+
+        _wait_for_browser_close(ctx, page)
+
+        try:
+            ctx.close()
+        except Exception:
+            pass
+
+    return {"opened_url": opened_url, "balance": balance}
+
+
 def do_checkin(name, url, headless=True, timeout=30000):
+    busy_error = get_account_busy_error(name)
+    if busy_error:
+        log.info(f"[{name}] 跳过签到 - {busy_error}")
+        return
+
     set_status(name, "checking")
 
     if not has_session(name):
@@ -404,44 +999,23 @@ def do_checkin(name, url, headless=True, timeout=30000):
     try:
         with sync_playwright() as p:
             ctx = _launch_ctx(p, profile_dir, headless=headless)
+            prepare_checkin_monitor(ctx)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             page.wait_for_load_state("networkidle", timeout=timeout)
 
-            # Wait for the check-in toast to appear.
-            success = False
-            message = ""
-            for wait_ms in [2000, 3000, 5000]:
-                page.wait_for_timeout(wait_ms)
-                success, message = verify_checkin(page, url)
-                if success or "过期" in message or "登录" in message:
-                    break
-
-            # Always extract balance (for comparison even on "failure")
-            balance = extract_balance(page)
-
-            # If toast detection failed but balance increased, count as success
-            if not success and balance and prev_balance:
-                try:
-                    new_val = float(balance.replace("$", "").replace(",", ""))
-                    old_val = float(prev_balance.replace("$", "").replace(",", ""))
-                    if new_val > old_val:
-                        gained = new_val - old_val
-                        username = extract_username(page) or name
-                        success = True
-                        message = f"已登录: {username} (余额增加 ${gained:.2f}，签到成功)"
-                except (ValueError, AttributeError):
-                    pass
-
-            if success and balance:
-                message = f"{message} (余额: {balance})"
+            result_state, message, balance = wait_for_checkin_result(page, url, prev_balance=prev_balance)
 
             ctx.close()
 
-        if success:
+        if result_state == "success":
             set_status(name, "success", message, balance=balance)
             append_history({"account": name, "time": datetime.now().isoformat(), "status": "success", "message": message, "balance": balance})
             log.info(f"[{name}] 签到成功 - {message}")
+        elif result_state == "uncertain":
+            set_status(name, "uncertain", message, balance=balance)
+            append_history({"account": name, "time": datetime.now().isoformat(), "status": "uncertain", "message": message, "balance": balance})
+            log.warning(f"[{name}] 签到待确认 - {message}")
         else:
             set_status(name, "failed", message, balance=balance)
             append_history({"account": name, "time": datetime.now().isoformat(), "status": "failed", "message": message, "balance": balance})
@@ -458,7 +1032,7 @@ def do_refresh_balance(name, url):
     """Refresh balance for a single account without checking in."""
     with _lock:
         current = _account_status.get(name, {})
-        if current.get("state") in ("checking", "logging_in", "refreshing"):
+        if current.get("state") in ACTIVE_ACCOUNT_STATES:
             return
 
     if not has_session(name):
@@ -488,6 +1062,26 @@ def do_refresh_balance(name, url):
         msg = str(e)[:200]
         set_status(name, "idle", message=msg)
         log.error(f"[{name}] 余额刷新异常 - {msg}")
+
+
+def do_open_browser(name, url):
+    """Open a visible browser for manual inspection."""
+    if not has_session(name):
+        set_status(name, "no_session", "未保存会话")
+        return
+
+    set_status(name, "inspecting", "浏览器已打开，可手动检查 key 和签到状态")
+    balance = None
+
+    try:
+        result = open_saved_session_browser(name, url)
+        balance = result.get("balance")
+        set_status(name, "idle", balance=balance)
+        log.info(f"[{name}] 手动查看结束")
+    except Exception as e:
+        msg = str(e)[:200]
+        set_status(name, "inspect_failed", msg, balance=balance)
+        log.error(f"[{name}] 打开浏览器失败 - {msg}")
 
 
 def do_login(name, url):
@@ -544,7 +1138,7 @@ def _poll_login_then_wait_close(ctx, page, status_key):
 
         for pg in pages:
             try:
-                name = extract_username(pg)
+                name = extract_username(pg, log_detect=True)
                 if name and name != detected_name:
                     detected_name = name
                     set_status(status_key, "logging_in",
@@ -597,7 +1191,7 @@ def do_login_new(url):
             if not detected_name:
                 for pg in ctx.pages:
                     try:
-                        detected_name = extract_username(pg)
+                        detected_name = extract_username(pg, log_detect=True)
                         if detected_name:
                             break
                     except Exception:
@@ -756,6 +1350,7 @@ def get_accounts():
         result.append({
             "name": n,
             "url": a.get("url", DEFAULT_URL),
+            "note": a.get("note", ""),
             "hasSession": has_session(n),
             "state": s.get("state", "idle"),
             "message": s.get("message", ""),
@@ -774,6 +1369,8 @@ def add_account():
     name = data.get("name", "").strip()
     if not name:
         return jsonify({"error": "Name required"}), 400
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
     config = load_config()
     if any(a["name"] == name for a in config["accounts"]):
         return jsonify({"error": "Already exists"}), 409
@@ -785,6 +1382,8 @@ def add_account():
 @app.route("/api/accounts/<name>", methods=["DELETE"])
 @require_auth
 def remove_account(name):
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
     config = load_config()
     config["accounts"] = [a for a in config["accounts"] if a["name"] != name]
     save_config(config)
@@ -794,6 +1393,64 @@ def remove_account(name):
     with _lock:
         _account_status.pop(name, None)
     return jsonify({"ok": True})
+
+
+@app.route("/api/accounts/<name>", methods=["PATCH"])
+@require_auth
+def patch_account(name):
+    """Rename an account and/or update its note.
+
+    Body: {"name": "new_name"?, "note": "new note"?}. Both fields optional;
+    pass only what you want to change. Renaming moves the profile directory
+    and migrates the in-memory status key, so the browser session and
+    balance state survive the rename. History entries keep their original
+    account name — they are an immutable log of what happened.
+    """
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
+    busy = get_account_busy_error(name)
+    if busy:
+        return jsonify({"error": busy}), 409
+
+    data = request.json or {}
+    new_name_raw = data.get("name")
+    new_name = new_name_raw.strip() if isinstance(new_name_raw, str) else None
+    new_note = data.get("note")
+    if new_note is not None:
+        new_note = str(new_note).strip()[:200]
+
+    config = load_config()
+    idx = next((i for i, a in enumerate(config["accounts"]) if a["name"] == name), -1)
+    if idx < 0:
+        return jsonify({"error": "Not found"}), 404
+
+    current = name
+    if new_name and new_name != name:
+        if not _safe_name(new_name):
+            return jsonify({"error": "新账号名包含非法字符"}), 400
+        if any(a["name"] == new_name for a in config["accounts"]):
+            return jsonify({"error": "新账号名已存在"}), 409
+        src = PROFILES_DIR / name
+        dst = PROFILES_DIR / new_name
+        if dst.exists():
+            return jsonify({"error": "目标会话目录已存在，请先移除"}), 409
+        if src.exists():
+            src.rename(dst)
+        config["accounts"][idx]["name"] = new_name
+        with _lock:
+            if name in _account_status:
+                _account_status[new_name] = _account_status.pop(name)
+        current = new_name
+
+    if new_note is not None:
+        entry = config["accounts"][idx]
+        if new_note:
+            entry["note"] = new_note
+        else:
+            entry.pop("note", None)
+
+    save_config(config)
+    return jsonify({"ok": True, "name": current})
 
 
 @app.route("/api/login-new", methods=["POST"])
@@ -815,10 +1472,21 @@ def login_new():
 @require_auth
 def login_account(name):
     """Re-login an existing account."""
-    config = load_config()
-    acc = next((a for a in config["accounts"] if a["name"] == name), None)
-    url = acc["url"] if acc else DEFAULT_URL
-    threading.Thread(target=do_login, args=(name, url), daemon=True).start()
+    acc, err = _account_or_error(name, require_session=False)
+    if err:
+        return err
+    threading.Thread(target=do_login, args=(name, acc["url"]), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/open-browser/<name>", methods=["POST"])
+@require_auth
+def open_browser_account(name):
+    acc, err = _account_or_error(name)
+    if err:
+        return err
+    url = acc.get("url", DEFAULT_URL)
+    threading.Thread(target=do_open_browser, args=(name, url), daemon=True).start()
     return jsonify({"ok": True})
 
 
@@ -826,33 +1494,50 @@ def login_account(name):
 @require_auth
 def checkin_all():
     global _busy
-    if _busy:
-        return jsonify({"error": "Already running"}), 409
-    config = load_config()
-    acc_map = {a["name"]: a for a in config["accounts"] if has_session(a["name"])}
-    if not acc_map:
-        return jsonify({"error": "没有可签到的账号（请先登录）"}), 400
-    headless = config.get("headless", True)
-    timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
+    with _lock:
+        if _busy:
+            return jsonify({"error": "Already running"}), 409
+        _busy = True
+    try:
+        config = load_config()
+        with _lock:
+            busy_names = {
+                name for name, status in _account_status.items()
+                if status.get("state") in ACTIVE_ACCOUNT_STATES
+            }
+        acc_map = {
+            a["name"]: a for a in config["accounts"]
+            if has_session(a["name"]) and a["name"] not in busy_names
+        }
+        if not acc_map:
+            with _lock:
+                _busy = False
+            return jsonify({"error": "没有可签到的账号（请先登录或关闭正在使用的浏览器）"}), 400
+        headless = config.get("headless", True)
+        timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
 
-    # Frontend can send preferred processing order
-    data = request.get_json(silent=True) or {}
-    order = data.get("order")
-    if order and isinstance(order, list):
-        accounts = [acc_map[n] for n in order if n in acc_map]
-        seen = {a["name"] for a in accounts}
-        accounts += [a for a in acc_map.values() if a["name"] not in seen]
-    else:
-        accounts = list(acc_map.values())
+        # Frontend can send preferred processing order
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            accounts = [acc_map[n] for n in order if n in acc_map]
+            seen = {a["name"] for a in accounts}
+            accounts += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            accounts = list(acc_map.values())
+    except Exception:
+        with _lock:
+            _busy = False
+        raise
 
     def run():
         global _busy
-        _busy = True
         try:
             for a in accounts:
                 do_checkin(a["name"], a.get("url", DEFAULT_URL), headless, timeout)
         finally:
-            _busy = False
+            with _lock:
+                _busy = False
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"ok": True, "count": len(accounts)})
@@ -861,12 +1546,10 @@ def checkin_all():
 @app.route("/api/checkin/<name>", methods=["POST"])
 @require_auth
 def checkin_one(name):
+    acc, err = _account_or_error(name)
+    if err:
+        return err
     config = load_config()
-    acc = next((a for a in config["accounts"] if a["name"] == name), None)
-    if not acc:
-        return jsonify({"error": "Not found"}), 404
-    if not has_session(name):
-        return jsonify({"error": "请先登录此账号"}), 400
     url = acc.get("url", DEFAULT_URL)
     headless = config.get("headless", True)
     timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
@@ -878,32 +1561,49 @@ def checkin_one(name):
 @require_auth
 def refresh_balance_all():
     global _refreshing
-    if _refreshing:
-        return jsonify({"error": "Already refreshing"}), 409
-    config = load_config()
-    acc_map = {a["name"]: a for a in config["accounts"] if has_session(a["name"])}
-    if not acc_map:
-        return jsonify({"error": "没有可刷新的账号"}), 400
+    with _lock:
+        if _refreshing:
+            return jsonify({"error": "Already refreshing"}), 409
+        _refreshing = True
+    try:
+        config = load_config()
+        with _lock:
+            busy_names = {
+                name for name, status in _account_status.items()
+                if status.get("state") in ACTIVE_ACCOUNT_STATES
+            }
+        acc_map = {
+            a["name"]: a for a in config["accounts"]
+            if has_session(a["name"]) and a["name"] not in busy_names
+        }
+        if not acc_map:
+            with _lock:
+                _refreshing = False
+            return jsonify({"error": "没有可刷新的账号（请先登录或关闭正在使用的浏览器）"}), 400
 
-    # Frontend can send preferred processing order
-    data = request.get_json(silent=True) or {}
-    order = data.get("order")
-    if order and isinstance(order, list):
-        ordered = [acc_map[n] for n in order if n in acc_map]
-        # Append any accounts not in the order list
-        seen = {a["name"] for a in ordered}
-        ordered += [a for a in acc_map.values() if a["name"] not in seen]
-    else:
-        ordered = list(acc_map.values())
+        # Frontend can send preferred processing order
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            ordered = [acc_map[n] for n in order if n in acc_map]
+            # Append any accounts not in the order list
+            seen = {a["name"] for a in ordered}
+            ordered += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            ordered = list(acc_map.values())
+    except Exception:
+        with _lock:
+            _refreshing = False
+        raise
 
     def run():
         global _refreshing
-        _refreshing = True
         try:
             for a in ordered:
                 do_refresh_balance(a["name"], a.get("url", DEFAULT_URL))
         finally:
-            _refreshing = False
+            with _lock:
+                _refreshing = False
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"ok": True, "count": len(ordered)})
@@ -912,12 +1612,9 @@ def refresh_balance_all():
 @app.route("/api/refresh-balance/<name>", methods=["POST"])
 @require_auth
 def refresh_balance_one(name):
-    config = load_config()
-    acc = next((a for a in config["accounts"] if a["name"] == name), None)
-    if not acc:
-        return jsonify({"error": "Not found"}), 404
-    if not has_session(name):
-        return jsonify({"error": "请先登录此账号"}), 400
+    acc, err = _account_or_error(name)
+    if err:
+        return err
     url = acc.get("url", DEFAULT_URL)
     threading.Thread(target=do_refresh_balance, args=(name, url), daemon=True).start()
     return jsonify({"ok": True})
@@ -934,4 +1631,4 @@ if __name__ == "__main__":
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
     print("\n  AnyRouter 签到助手")
     print("  http://localhost:8686\n")
-    app.run(host="0.0.0.0", port=8686, debug=False)
+    app.run(host="127.0.0.1", port=8686, debug=False)

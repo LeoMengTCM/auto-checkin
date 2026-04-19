@@ -9,7 +9,7 @@
 
 import sys, json, time
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROFILES_DIR = BASE_DIR / "data" / "profiles"

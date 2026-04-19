@@ -11,5 +11,8 @@ config/accounts.json
 
 data/debug/
 
+# MCP server artifacts (not part of project)
+sqlite_mcp_server.db
+
 # Claude Code
 .claude/

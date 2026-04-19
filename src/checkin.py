@@ -6,6 +6,7 @@
 用法:
     python src/checkin.py login <账号名>    # 手动登录并保存会话
     python src/checkin.py checkin [账号名]   # 自动签到（不指定则签到所有）
+    python src/checkin.py open <账号名>     # 打开浏览器手动检查状态
     python src/checkin.py list              # 查看账号列表
     python src/checkin.py add <账号名>       # 添加新账号到配置
     python src/checkin.py remove <账号名>    # 从配置中移除账号
@@ -20,7 +21,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 # 路径配置
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -73,6 +74,8 @@ def has_session(account_name):
 
 def cmd_login(account_name):
     """打开浏览器让用户手动登录，保存会话"""
+    from server import _launch_ctx
+
     config = load_config()
 
     # 如果账号不在配置中，自动添加
@@ -90,12 +93,7 @@ def cmd_login(account_name):
     logging.info("请在浏览器中手动登录，完成后关闭浏览器窗口即可保存会话。")
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            profile_dir,
-            headless=False,
-            viewport={"width": 1280, "height": 800},
-            locale="zh-CN",
-        )
+        context = _launch_ctx(p, profile_dir, headless=False)
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(url, wait_until="domcontentloaded")
 
@@ -115,6 +113,8 @@ def cmd_login(account_name):
 
 def cmd_checkin(account_name=None):
     """自动签到"""
+    from server import _launch_ctx, prepare_checkin_monitor, wait_for_checkin_result
+
     config = load_config()
     timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000  # 转为毫秒
     headless = config.get("headless", True)
@@ -150,27 +150,26 @@ def cmd_checkin(account_name=None):
             logging.info(f"[{name}] 正在签到...")
 
             try:
-                context = p.chromium.launch_persistent_context(
-                    profile_dir,
-                    headless=headless,
-                    viewport={"width": 1280, "height": 800},
-                    locale="zh-CN",
-                )
+                context = _launch_ctx(p, profile_dir, headless=headless)
+                prepare_checkin_monitor(context)
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout)
 
                 # 等待页面完全加载（JS 挑战 + 自动签到）
                 page.wait_for_load_state("networkidle", timeout=timeout)
 
-                # 额外等待确保签到逻辑执行完成
-                page.wait_for_timeout(3000)
-
-                title = page.title()
-                current_url = page.url
-                logging.info(f"[{name}] 签到完成 - 页面: {title} ({current_url})")
-                success_count += 1
+                result_state, message, _balance = wait_for_checkin_result(page, url)
 
                 context.close()
+                if result_state == "success":
+                    logging.info(f"[{name}] 签到成功 - {message}")
+                    success_count += 1
+                elif result_state == "uncertain":
+                    logging.warning(f"[{name}] 签到待确认 - {message}")
+                    fail_count += 1
+                else:
+                    logging.warning(f"[{name}] 签到失败 - {message}")
+                    fail_count += 1
             except Exception as e:
                 logging.error(f"[{name}] 签到失败: {e}")
                 fail_count += 1
@@ -180,6 +179,37 @@ def cmd_checkin(account_name=None):
                     pass
 
     logging.info(f"签到完成: 成功 {success_count}, 失败 {fail_count}, 共 {len(accounts)}")
+
+
+def cmd_open(account_name):
+    """打开已保存会话的浏览器，手动检查 key 和签到状态。"""
+    from server import open_saved_session_browser
+
+    config = load_config()
+    account = next((a for a in config["accounts"] if a["name"] == account_name), None)
+    if not account:
+        logging.error(f"账号 '{account_name}' 不在配置中。请先运行: python src/checkin.py login {account_name}")
+        return
+
+    if not has_session(account_name):
+        logging.error(f"账号 '{account_name}' 没有保存的会话。请先运行: python src/checkin.py login {account_name}")
+        return
+
+    url = account.get("url", DEFAULT_URL)
+    logging.info(f"正在为账号 '{account_name}' 打开浏览器...")
+    logging.info("将直接打开控制台页面，请手动确认 key 状态和签到情况，完成后关闭浏览器。")
+
+    try:
+        result = open_saved_session_browser(account_name, url)
+    except Exception as e:
+        logging.error(f"打开浏览器失败: {e}")
+        return
+
+    balance = result.get("balance")
+    opened_url = result.get("opened_url", url)
+    if balance:
+        logging.info(f"[{account_name}] 当前余额: {balance}")
+    logging.info(f"[{account_name}] 浏览器已关闭（打开地址: {opened_url}）")
 
 
 def cmd_list():
@@ -248,6 +278,10 @@ def main():
     checkin_parser = subparsers.add_parser("checkin", help="自动签到")
     checkin_parser.add_argument("account", nargs="?", help="账号名称（不指定则签到所有）")
 
+    # open
+    open_parser = subparsers.add_parser("open", help="打开已保存会话的浏览器，手动检查状态")
+    open_parser.add_argument("account", help="账号名称")
+
     # list
     subparsers.add_parser("list", help="查看账号列表")
 
@@ -268,6 +302,8 @@ def main():
         cmd_login(args.account)
     elif args.command == "checkin":
         cmd_checkin(args.account)
+    elif args.command == "open":
+        cmd_open(args.account)
     elif args.command == "list":
         cmd_list()
     elif args.command == "add":
