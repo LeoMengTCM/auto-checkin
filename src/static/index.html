@@ -415,6 +415,19 @@ html, body {
 .edit-input:focus { border-color: var(--accent); }
 .edit-input.name { flex: 0 1 160px; }
 .edit-input.note { flex: 2 1 180px; }
+.edit-input.token { flex: 3 1 240px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+.token-field-group {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex: 3 1 280px; min-width: 200px;
+}
+.token-set-badge {
+  font-size: 12px; font-weight: 600;
+  color: var(--green);
+  background: var(--green-tint);
+  padding: 3px 9px; border-radius: 10px;
+  white-space: nowrap; flex-shrink: 0;
+}
 .edit-btns { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* ── Empty State ──────────────────────────────────────── */
@@ -543,6 +556,33 @@ html, body {
 .btn-refresh-one:hover { opacity: 1 !important; background: var(--accent-tint); color: var(--accent); }
 .btn-refresh-one svg { width: 12px; height: 12px; }
 
+/* ── Health Probe ─────────────────────────────────────── */
+.btn-probe {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--sep);
+  cursor: pointer;
+  background: var(--fill); color: var(--text-2);
+  transition: background 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
+  flex-shrink: 0;
+}
+.btn-probe:hover { background: var(--accent-tint); color: var(--accent); }
+.btn-probe:active { transform: scale(0.96); }
+.btn-probe:disabled { opacity: 0.5; pointer-events: none; }
+.btn-probe svg { width: 15px; height: 15px; }
+.btn-probe.no-token { opacity: 0.5; }
+.btn-probe.no-token:hover { opacity: 1; }
+
+.health-badge {
+  font-size: 12px; font-weight: 600;
+  padding: 1px 9px; border-radius: 9px;
+  display: inline-flex; align-items: center; gap: 4px;
+  white-space: nowrap;
+}
+.health-badge.ok { background: var(--green-tint); color: var(--green); }
+.health-badge.fail { background: var(--red-tint); color: var(--red); }
+.health-badge.checking { background: var(--accent-tint); color: var(--accent); }
+
 /* ── Auth Screen ─────────────────────────────────────── */
 #auth-screen {
   position: fixed; inset: 0; z-index: 300;
@@ -653,6 +693,7 @@ html, body {
       <div class="page-header">
         <h1 class="page-title">账号管理</h1>
         <div class="page-actions" id="page-actions">
+          <button class="btn btn-secondary" id="btn-check-health" onclick="checkHealthAll()">检测可用</button>
           <button class="btn btn-secondary" id="btn-refresh" onclick="refreshBalance()">刷新余额</button>
           <button class="btn btn-secondary" onclick="loginNew()">添加账号</button>
           <button class="btn btn-primary" id="btn-check-all" onclick="checkAll()">全部签到</button>
@@ -730,7 +771,8 @@ function renderDashboard() {
   const total = accounts.length;
   const checked = accounts.filter(a => a.checkedToday || a.state === 'success').length;
   const hasActive = accounts.some(a =>
-    ['checking', 'logging_in', 'refreshing', 'inspecting'].includes(a.state)
+    ['checking', 'logging_in', 'refreshing', 'inspecting'].includes(a.state) ||
+    (a.health && a.health.state === 'checking')
   );
 
   // Calculate total balance
@@ -792,6 +834,19 @@ function renderDashboard() {
     btnRefresh.disabled = total === 0;
   }
 
+  const btnHealth = document.getElementById('btn-check-health');
+  if (btnHealth) {
+    const isProbing = accounts.some(a => a.health && a.health.state === 'checking');
+    const tokenCount = accounts.filter(a => a.hasToken).length;
+    if (isProbing) {
+      btnHealth.innerHTML = `<span class="btn-spinner" style="border-color:var(--sep);border-top-color:var(--accent)"></span> 检测中`;
+      btnHealth.disabled = true;
+    } else {
+      btnHealth.innerHTML = '检测可用';
+      btnHealth.disabled = tokenCount === 0;
+    }
+  }
+
   // List header
   const lhContainer = document.getElementById('list-header-container');
   if (total > 0) {
@@ -842,12 +897,14 @@ function renderDashboard() {
     if (prev) {
       const pn = prev.querySelector('[data-edit-name]');
       const pt = prev.querySelector('[data-edit-note]');
+      const pk = prev.querySelector('[data-edit-token]');
       const ae = document.activeElement;
       editSnapshot = {
         origName: prev.dataset.origName,
         nameVal: pn.value,
         noteVal: pt.value,
-        focus: ae === pn ? 'name' : ae === pt ? 'note' : null,
+        tokenVal: pk ? pk.value : '',
+        focus: ae === pn ? 'name' : ae === pt ? 'note' : ae === pk ? 'token' : null,
         selStart: ae && ae.selectionStart != null ? ae.selectionStart : 0,
         selEnd: ae && ae.selectionEnd != null ? ae.selectionEnd : 0,
       };
@@ -867,13 +924,18 @@ function renderDashboard() {
     if (row) {
       const nameEl = row.querySelector('[data-edit-name]');
       const noteEl = row.querySelector('[data-edit-note]');
+      const tokenEl = row.querySelector('[data-edit-token]');
       if (editSnapshot && editSnapshot.origName === editingAccount) {
         nameEl.value = editSnapshot.nameVal;
         noteEl.value = editSnapshot.noteVal;
+        if (tokenEl) tokenEl.value = editSnapshot.tokenVal || '';
         if (editSnapshot.focus) {
-          const target = editSnapshot.focus === 'name' ? nameEl : noteEl;
-          target.focus();
-          try { target.setSelectionRange(editSnapshot.selStart, editSnapshot.selEnd); } catch {}
+          const target = editSnapshot.focus === 'name' ? nameEl
+            : editSnapshot.focus === 'note' ? noteEl : tokenEl;
+          if (target) {
+            target.focus();
+            try { target.setSelectionRange(editSnapshot.selStart, editSnapshot.selEnd); } catch {}
+          }
         }
       } else {
         nameEl.focus();
@@ -890,6 +952,8 @@ function renderAccountRow(a) {
   const statusHtml = statusLabel(a);
   const action = actionBtn(a);
   const browserAction = browserBtn(a);
+  const probe = probeBtn(a);
+  const health = healthBadge(a);
   const balanceText = a.balance || '--';
   const balanceClass = a.balance ? ' has-balance' : '';
   const x = `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3.5" y1="3.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="3.5" x2="3.5" y2="10.5"/></svg>`;
@@ -904,11 +968,12 @@ function renderAccountRow(a) {
         <div class="account-name">${esc(a.name)}</div>
         ${noteHtml}
         <div class="account-meta">
-          ${statusHtml}
+          ${statusHtml}${health}
         </div>
       </div>
       <div class="account-balance-col${balanceClass}">${esc(balanceText)}${refreshBtn}</div>
       <div class="account-actions">
+        ${probe}
         ${browserAction}
         ${action}
         <button class="btn-edit" onclick="startEdit('${esc(a.name)}')" title="编辑账号名 / 备注">${pencil}</button>
@@ -931,11 +996,21 @@ function renderConfirmRow(name) {
 function renderEditRow(a) {
   const n = esc(a.name);
   const note = esc(a.note || '');
+  const tokenPlaceholder = a.hasToken
+    ? `留空则不改，当前 ${esc(a.tokenMask || '')}`
+    : 'API 令牌 sk-...（用于可用性检测）';
+  const tokenSetBadge = a.hasToken
+    ? '<span class="token-set-badge">✓ 已设置</span>'
+    : '';
   return `
     <div class="edit-row" data-orig-name="${n}">
       <div class="edit-fields">
         <input type="text" class="edit-input name" data-edit-name value="${n}" placeholder="账号名" autocomplete="off" maxlength="100" onkeydown="onEditKey(event)">
         <input type="text" class="edit-input note" data-edit-note value="${note}" placeholder="备注（可选）" autocomplete="off" maxlength="200" onkeydown="onEditKey(event)">
+        <div class="token-field-group">
+          <input type="text" class="edit-input token" data-edit-token value="" placeholder="${tokenPlaceholder}" autocomplete="off" maxlength="200" spellcheck="false" onkeydown="onEditKey(event)">
+          ${tokenSetBadge}
+        </div>
       </div>
       <div class="edit-btns">
         <button class="btn btn-ghost" onclick="cancelEdit()">取消</button>
@@ -997,6 +1072,36 @@ function actionBtn(a) {
   if (a.state === 'failed')
     return `<button class="btn-action fail" onclick="doCheckin('${n}')">重试</button>`;
   return `<button class="btn-action default" onclick="doCheckin('${n}')">签到</button>`;
+}
+
+function probeBtn(a) {
+  const pulse = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`;
+  if (a.health && a.health.state === 'checking')
+    return `<button class="btn-probe" disabled title="检测中"><span class="row-spinner" style="width:14px;height:14px;border-width:2px"></span></button>`;
+  if (['checking', 'refreshing', 'logging_in', 'inspecting'].includes(a.state)) return '';
+  if (!a.hasToken)
+    return `<button class="btn-probe no-token" onclick="promptToken('${esc(a.name)}')" title="检测可用性（需先填写 API 令牌，点此去填）">${pulse}</button>`;
+  return `<button class="btn-probe" onclick="checkHealth('${esc(a.name)}')" title="检测可用性（发一条 Claude Code 测试请求）">${pulse}</button>`;
+}
+
+function healthBadge(a) {
+  if (!a.hasToken) return '';
+  const h = a.health;
+  if (!h) return '';
+  if (h.state === 'checking') {
+    const mini = `<span class="row-spinner" style="width:11px;height:11px;border-width:1.5px"></span>`;
+    return `<span class="health-badge checking">${mini} 检测中</span>`;
+  }
+  if (h.state === 'ok') return `<span class="health-badge ok" title="${esc(h.message || '')}">✓ 可用</span>`;
+  return `<span class="health-badge fail" title="${esc(h.message || '')}">✗ ${esc(healthShort(h))}</span>`;
+}
+
+function healthShort(h) {
+  const map = {
+    auth: '令牌失效', quota: '余额不足', rate_limit: '限流',
+    model: '模型不可用', network: '连不上', server: '服务端错误', no_token: '未设令牌',
+  };
+  return (h && map[h.category]) || '不可用';
 }
 
 /* ── Activity Render ──────────────────────────────────── */
@@ -1112,6 +1217,30 @@ async function refreshBalanceOne(name) {
   startPolling(); refresh();
 }
 
+async function checkHealth(name) {
+  const res = await api('/api/check-health/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  startPolling(); refresh();
+}
+
+function promptToken(name) {
+  toast('请先为该账号填写 API 令牌', 'error');
+  startEdit(name);
+}
+
+async function checkHealthAll() {
+  const order = getSortedAccounts().map(a => a.name);
+  const res = await api('/api/check-health', { method: 'POST', body: JSON.stringify({ order }) });
+  if (!res) return;
+  if (res.ok) {
+    toast(`正在检测 ${res.count} 个账号...`);
+    startPolling(); refresh();
+  } else if (res.error) {
+    toast(res.error, 'error');
+  }
+}
+
 function toggleSort() {
   sortByBalance = !sortByBalance;
   renderDashboard();
@@ -1144,13 +1273,16 @@ async function saveEdit() {
   const origName = row.dataset.origName;
   const newName = row.querySelector('[data-edit-name]').value.trim();
   const newNote = row.querySelector('[data-edit-note]').value.trim();
+  const tokenEl = row.querySelector('[data-edit-token]');
+  const newToken = tokenEl ? tokenEl.value.trim() : '';
   if (!newName) { toast('账号名不能为空', 'error'); return; }
 
   const body = { note: newNote };
   if (newName !== origName) body.name = newName;
+  if (newToken) body.token = newToken;
   // If nothing changed, just close the editor
   const orig = accounts.find(a => a.name === origName);
-  if (newName === origName && newNote === (orig?.note || '')) {
+  if (newName === origName && newNote === (orig?.note || '') && !newToken) {
     editingAccount = null;
     renderDashboard();
     return;

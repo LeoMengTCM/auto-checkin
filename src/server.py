@@ -2,11 +2,14 @@
 """AnyRouter Check-in Web Server"""
 
 import json
+import re
 import shutil
 import threading
 import uuid
 import logging
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, date
 from pathlib import Path
 
@@ -29,11 +32,29 @@ DEFAULT_TIMEOUT = 30
 CHECKIN_RESULT_WAIT_MS = 20000
 CHECKIN_RESULT_POLL_MS = 500
 
+# One-shot diagnostic toggle: dump all check-in network responses to the log
+# so we can see anyrouter's real sign-in endpoint & payload shape, then write
+# detection heuristics against real data instead of guessing.
+CHECKIN_DIAG_LOG = False
+_DIAG_URL_RE = re.compile(
+    r"check.?in|sign.?in|attendance|daily|reward|credit|quota|user|account|api",
+    re.I,
+)
+
+# Real sign-in endpoint discovered via diagnostics:
+#   POST https://anyrouter.top/api/user/sign_in
+#   → success:  {"message":"","success":true}
+#   → repeat:   {"message":"已签到...","success":false}  (assumed shape)
+SIGNIN_URL_RE = re.compile(r"/api/user/sign_in\b", re.I)
+SIGNIN_ALREADY_TOKENS = ("已签", "重复", "already", "duplicate")
+
 # Thread-safe status tracking
 _lock = threading.Lock()
 _account_status = {}
+_account_health = {}
 _busy = False
 _refreshing = False
+_health_busy = False
 _io_lock = threading.RLock()
 ACTIVE_ACCOUNT_STATES = {"checking", "logging_in", "refreshing", "inspecting"}
 
@@ -174,6 +195,22 @@ def set_status(name, state, message="", balance=None):
         _account_status[name] = entry
 
 
+def set_health(name, state, message="", category=None):
+    """Record the latest Claude Code availability probe result for an account.
+
+    Kept in a separate dict from _account_status so a probe never overwrites the
+    account's check-in state (and vice versa) — availability and check-in are two
+    independent dimensions shown side by side in the UI.
+    """
+    with _lock:
+        _account_health[name] = {
+            "state": state,
+            "message": message,
+            "category": category,
+            "time": datetime.now().isoformat(),
+        }
+
+
 def get_account_state(name):
     with _lock:
         return (_account_status.get(name) or {}).get("state")
@@ -253,11 +290,17 @@ DETECT_TOAST_JS = r"""
         }
     }
 
-    // Strategy 3: Generic toast/notification selectors
+    // Strategy 3: Generic toast/notification/modal selectors
     const genericSelectors = [
         '[class*="toast"]', '[class*="Toast"]',
         '[class*="notification"]', '[class*="message"]',
+        '[class*="modal"]', '[class*="Modal"]',
+        '[class*="dialog"]', '[class*="Dialog"]',
+        '[class*="popup"]', '[class*="Popup"]',
+        '[class*="checkin"]', '[class*="check-in"]',
+        '[class*="banner"]', '[class*="reward"]',
         '[role="alert"]', '[role="status"]',
+        '[role="dialog"]', '[role="alertdialog"]',
     ];
     const seen = new Set();
     for (const sel of genericSelectors) {
@@ -281,20 +324,26 @@ DETECT_TOAST_JS = r"""
         } catch {}
     }
 
-    // Strategy 4: Full page text scan
+    // Strategy 4: Full page text scan with flexible patterns
     const body = document.body?.innerText || '';
-    const patterns = [
-        /签到成功[^。\n]{0,30}/,
-        /签到失败[^。\n]{0,30}/,
-        /获得\s*\$\d+[^。\n]{0,20}/,
+    const successPatterns = [
+        /签到成功[^。\n]{0,40}/,
+        /已签到[^。\n]{0,40}/,
+        /今日.{0,5}签到[^。\n]{0,40}/,
+        /(?:获得|领取|增加|奖励|\+)\s*\$?\d+(?:\.\d+)?\s*(?:美元|额度|刀|credit|quota)?[^。\n]{0,30}/i,
+        /(?:checked.?in|sign(?:ed)?.?in)[^.\n]{0,40}/i,
     ];
-    for (const pat of patterns) {
+    const failPatterns = [
+        /签到失败[^。\n]{0,40}/,
+        /(?:check.?in|sign.?in)[^.\n]{0,5}(?:fail|error)[^.\n]{0,30}/i,
+    ];
+    for (const pat of successPatterns) {
         const m = body.match(pat);
-        if (m) {
-            const text = m[0].trim();
-            const isSuccess = /成功|获得/.test(text);
-            return { found: true, text, type: isSuccess ? 'success' : 'fail' };
-        }
+        if (m) return { found: true, text: m[0].trim().slice(0, 150), type: 'success' };
+    }
+    for (const pat of failPatterns) {
+        const m = body.match(pat);
+        if (m) return { found: true, text: m[0].trim().slice(0, 150), type: 'fail' };
     }
 
     return { found: false, text: '', type: 'unknown' };
@@ -344,7 +393,15 @@ CHECKIN_MONITOR_INIT_JS = r"""
         '[class*="alert"]', '[class*="Alert"]',
         '[class*="snack"]', '[class*="Snack"]',
         '[class*="tip"]', '[class*="Tip"]',
-        '[role="alert"]', '[role="status"]',
+        '.semi-modal', '.semi-modal-content', '.semi-modal-confirm',
+        '[class*="modal"]', '[class*="Modal"]',
+        '[class*="dialog"]', '[class*="Dialog"]',
+        '[class*="drawer"]', '[class*="Drawer"]',
+        '[class*="checkin"]', '[class*="checkIn"]', '[class*="CheckIn"]', '[class*="check-in"]',
+        '[class*="signin"]', '[class*="signIn"]', '[class*="SignIn"]', '[class*="sign-in"]',
+        '[class*="reward"]', '[class*="Reward"]',
+        '[class*="banner"]', '[class*="Banner"]',
+        '[role="alert"]', '[role="status"]', '[role="dialog"]', '[role="alertdialog"]',
     ];
 
     const state = window[key] = {
@@ -492,16 +549,29 @@ CHECKIN_MONITOR_INIT_JS = r"""
         return null;
     };
 
-    const remember = (match, source) => {
+    const remember = (match, source, element) => {
         if (!match) return;
         const keyValue = `${match.type}:${match.text}`;
         if (seen.has(keyValue)) return;
         seen.add(keyValue);
+        let className = '';
+        let tagName = '';
+        if (element instanceof Element) {
+            try {
+                tagName = element.tagName ? element.tagName.toLowerCase() : '';
+                const raw = typeof element.className === 'string'
+                    ? element.className
+                    : (element.className && element.className.baseVal) || '';
+                className = String(raw).slice(0, 200);
+            } catch {}
+        }
         const event = {
             key: keyValue,
             type: match.type,
             text: match.text,
             source,
+            tagName,
+            className,
             ts: Date.now(),
         };
         state.events.push(event);
@@ -558,9 +628,28 @@ CHECKIN_MONITOR_INIT_JS = r"""
             visited.add(element);
             const match = classify(element.innerText || element.textContent || '');
             if (match) {
-                remember(match, source);
+                remember(match, source, element);
             }
         }
+        const fallbackInspect = (el) => {
+            if (!(el instanceof Element) || visited.has(el)) return;
+            visited.add(el);
+            const text = el.innerText || el.textContent || '';
+            if (!text || text.length > 1000) return;
+            if (!signalRegex.test(text)) return;
+            const match = classify(text);
+            if (match) {
+                remember(match, source + ':fallback', el);
+            }
+        };
+        fallbackInspect(root);
+        try {
+            let count = 0;
+            for (const el of root.querySelectorAll('*')) {
+                if (count++ > 300) break;
+                fallbackInspect(el);
+            }
+        } catch {}
     };
 
     const scanExistingSignals = () => {
@@ -747,6 +836,116 @@ def read_checkin_monitor(page):
     return {}
 
 
+def attach_response_recorder(ctx, max_bodies=30):
+    """Diagnostic listener: collect responses during check-in.
+
+    Records URL/status/content-type for every response; reads body (up to
+    1500 chars) only for URLs matching `_DIAG_URL_RE` or JSON content-types,
+    capped at `max_bodies` reads to avoid pulling huge payloads.
+    """
+    records = []
+    state = {"body_count": 0}
+    lock = threading.Lock()
+
+    def on_response(response):
+        try:
+            url = response.url or ""
+            status = response.status
+            try:
+                method = response.request.method
+            except Exception:
+                method = ""
+            try:
+                ct = (response.headers or {}).get("content-type", "")
+            except Exception:
+                ct = ""
+            entry = {
+                "method": method,
+                "status": status,
+                "url": url[:240],
+                "ct": ct[:80],
+            }
+            want_body = (
+                (bool(_DIAG_URL_RE.search(url)) or "json" in ct.lower())
+                and status < 400
+            )
+            if want_body:
+                with lock:
+                    can_read = state["body_count"] < max_bodies
+                    if can_read:
+                        state["body_count"] += 1
+                if can_read:
+                    try:
+                        body = response.text()
+                        if body:
+                            entry["body"] = body[:1500]
+                    except Exception as e:
+                        entry["body_err"] = str(e)[:80]
+            with lock:
+                records.append(entry)
+        except Exception as e:
+            with lock:
+                records.append({"err": str(e)[:120]})
+
+    ctx.on("response", on_response)
+    return records
+
+
+def dump_response_records(name, records, limit=50):
+    if not records:
+        log.info(f"[{name}] diag: 未捕获任何 response 事件")
+        return
+    with_body = [r for r in records if "body" in r]
+    log.info(
+        f"[{name}] diag: 共 {len(records)} 个 response，其中 {len(with_body)} 条带响应体，"
+        f"显示最近 {min(limit, len(records))} 条"
+    )
+    for r in records[-limit:]:
+        try:
+            line = json.dumps(r, ensure_ascii=False)
+        except Exception:
+            line = str(r)
+        log.info(f"  diag → {line[:1800]}")
+
+
+def attach_signin_capture(ctx):
+    """Capture POST /api/user/sign_in responses (authoritative check-in signal).
+
+    Returns a dict updated in-place by the response listener. We keep the latest
+    successful read because the very first sign_in response is often unreadable
+    ("Network.getResponseBody: No resource with given") — the page tends to
+    re-fire the request, and a later read succeeds.
+    """
+    state = {"captured": False, "success": None, "message": "", "status": None}
+    lock = threading.Lock()
+
+    def on_response(response):
+        try:
+            url = response.url or ""
+            if not SIGNIN_URL_RE.search(url):
+                return
+            req = response.request
+            if req and req.method and req.method.upper() != "POST":
+                return
+            try:
+                data = response.json()
+            except Exception:
+                return
+            if not isinstance(data, dict):
+                return
+            with lock:
+                state["captured"] = True
+                state["status"] = response.status
+                state["success"] = bool(data.get("success"))
+                msg = data.get("message")
+                state["message"] = msg if isinstance(msg, str) else ""
+        except Exception:
+            pass
+
+    ctx.on("response", on_response)
+    return state
+
+
 def _append_balance_message(message, balance):
     if balance:
         return f"{message} (余额: {balance})"
@@ -824,9 +1023,18 @@ def verify_checkin(page, url):
 
 
 def wait_for_checkin_result(page, url, prev_balance=None,
+                            signin_state=None, account_name=None,
                             wait_timeout_ms=CHECKIN_RESULT_WAIT_MS,
                             poll_interval_ms=CHECKIN_RESULT_POLL_MS):
-    """Wait a bounded amount of time for a real check-in signal."""
+    """Wait a bounded amount of time for a real check-in signal.
+
+    Priority order:
+      1. `signin_state` from `attach_signin_capture` — authoritative API response
+      2. Page-side monitor / DOM toast detection (legacy fallback)
+      3. Balance delta after timeout (heuristic fallback)
+      4. History check — if today already has a success entry and session is
+         valid, treat as "already checked in today" instead of uncertain.
+    """
     try:
         page.evaluate(CHECKIN_MONITOR_INIT_JS)
     except Exception:
@@ -837,7 +1045,32 @@ def wait_for_checkin_result(page, url, prev_balance=None,
     username = None
     wait_seconds = max(1, round(wait_timeout_ms / 1000))
 
+    def _format_success(msg_text, balance_now):
+        delta_text = ""
+        if balance_now and prev_balance:
+            new = _parse_balance_value(balance_now)
+            old = _parse_balance_value(prev_balance)
+            if new is not None and old is not None and new > old:
+                delta_text = f"，本次增加 ${new - old:.2f}"
+        base = f"签到成功{delta_text}"
+        if msg_text:
+            base = f"{base} - {msg_text}"
+        return base
+
     while time.monotonic() < deadline:
+        if signin_state and signin_state.get("captured"):
+            balance = extract_balance(page)
+            msg_text = (signin_state.get("message") or "").strip()
+            if signin_state.get("success"):
+                msg = _format_success(msg_text, balance)
+                return "success", _append_balance_message(msg, balance), balance
+            lower_text = msg_text.lower()
+            if any(token in msg_text or token in lower_text for token in SIGNIN_ALREADY_TOKENS):
+                msg = f"今日已签到{f' - {msg_text}' if msg_text else ''}"
+                return "success", _append_balance_message(msg, balance), balance
+            msg = f"签到失败{f': {msg_text}' if msg_text else ''}"
+            return "failed", _append_balance_message(msg, balance), balance
+
         status = detect_checkin_status(page, url)
         last_status = status
 
@@ -860,14 +1093,33 @@ def wait_for_checkin_result(page, url, prev_balance=None,
     balance = extract_balance(page)
     username = username or extract_username(page, log_detect=False)
 
+    try:
+        monitor_dump = read_checkin_monitor(page)
+        events = monitor_dump.get("events") or []
+        network = monitor_dump.get("network") or []
+        if events or network:
+            log.info(f"  monitor events ({len(events)}): {json.dumps(events, ensure_ascii=False)[:1500]}")
+            log.info(f"  monitor network ({len(network)}): {json.dumps(network, ensure_ascii=False)[:1500]}")
+        else:
+            log.info("  monitor 未捕获任何事件 (events/network 均为空)")
+    except Exception as _e:
+        log.info(f"  monitor dump 失败: {_e}")
+
     if balance and prev_balance:
         new_val = _parse_balance_value(balance)
         old_val = _parse_balance_value(prev_balance)
         if new_val is not None and old_val is not None and new_val > old_val:
             gained = new_val - old_val
             display_name = username or extract_username(page, log_detect=False) or "当前账号"
-            message = f"已登录: {display_name} (未捕获签到提醒，但余额增加 ${gained:.2f})"
+            message = f"签到成功，本次增加 ${gained:.2f} (账号: {display_name})"
             return "success", _append_balance_message(message, balance), balance
+
+    # If session is valid and today already has a success entry in history,
+    # anyrouter no longer fires sign_in on re-visit and shows no banner —
+    # treat as "already checked in" instead of uncertain.
+    if username and account_name and checked_today(account_name):
+        message = f"今日已签到 (会话有效，无新签到信号)"
+        return "success", _append_balance_message(message, balance), balance
 
     if username:
         message = _build_uncertain_checkin_message(wait_seconds, username=username, balance=balance)
@@ -913,6 +1165,181 @@ def extract_balance(page):
     except Exception:
         pass
     return None
+
+
+# ── Claude Code health probe ───────────────────────────────
+# Verify an account can actually relay a Claude Code request. anyrouter is an
+# official Claude relay and only forwards requests that look like they come from
+# Claude Code, so the probe must carry Claude Code's signature: the CLI
+# User-Agent, the claude-code anthropic-beta header, and a system prompt whose
+# first line identifies the caller as Claude Code. max_tokens is kept tiny so a
+# probe costs very little even on Opus.
+
+CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
+HEALTH_MODEL = "claude-opus-4-8"
+HEALTH_MAX_TOKENS = 16
+HEALTH_TIMEOUT = 30
+# Captured from a real claude-cli/2.1.187 request so the probe is byte-for-byte
+# indistinguishable from Claude Code.
+HEALTH_USER_AGENT = "claude-cli/2.1.187 (external, sdk-cli)"
+# anyrouter requires every request to opt into the 1M context window via this
+# beta flag — without it the relay rejects with HTTP 400 "请启用 1m 上下文",
+# even for Sonnet. It is a site-wide policy, not an Opus-specific one.
+HEALTH_ANTHROPIC_BETA = (
+    "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,"
+    "thinking-token-count-2026-05-13,context-management-2025-06-27,"
+    "prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
+    "advanced-tool-use-2025-11-20,effort-2025-11-24"
+)
+# Anthropic SDK (Stainless-generated) fingerprint headers real Claude Code sends.
+# Static values from the captured request — anyrouter doesn't check they match
+# the probe host's actual platform.
+HEALTH_STAINLESS_HEADERS = {
+    "x-stainless-arch": "arm64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "MacOS",
+    "x-stainless-package-version": "0.94.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v24.3.0",
+    "x-stainless-timeout": "300",
+}
+_QUOTA_TOKENS = ("insufficient", "quota", "credit", "余额", "额度", "欠费", "充值", "余量")
+# Transient categories worth retrying, and the backoff (seconds) before each
+# retry. anyrouter's Opus upstream returns 503 in bursts, so a short retry often
+# turns a false "unavailable" into a real verdict. 3 attempts total.
+HEALTH_RETRY_CATEGORIES = ("server", "rate_limit", "network")
+HEALTH_RETRY_BACKOFF = (2, 4)
+
+
+def _mask_token(token):
+    """Show only the head and tail of an API token for safe display."""
+    if not token or not isinstance(token, str):
+        return ""
+    token = token.strip()
+    if len(token) <= 10:
+        return "sk-****"
+    return f"{token[:6]}****{token[-4:]}"
+
+
+def _probe_suffix(msg):
+    msg = (msg or "").strip()
+    return f": {msg[:120]}" if msg else ""
+
+
+def _classify_probe_response(status, body):
+    """Map an HTTP status + body from /v1/messages into a health verdict."""
+    data = None
+    try:
+        data = json.loads(body)
+    except Exception:
+        pass
+
+    err_msg = ""
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            err_msg = err.get("message") or ""
+        elif isinstance(err, str):
+            err_msg = err
+        if not err_msg and isinstance(data.get("message"), str):
+            err_msg = data["message"]
+    if not err_msg and body:
+        err_msg = body.strip()[:200]
+    low = err_msg.lower()
+
+    # Success: a real assistant message came back.
+    if status == 200 and isinstance(data, dict) and data.get("type") == "message":
+        text = ""
+        for block in data.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text += block.get("text", "")
+        reply = " ".join(text.split())[:60] or "(空回复)"
+        return {"ok": True, "category": "ok", "message": f"可用 - 模型回复「{reply}」"}
+
+    # Balance/quota first — its keywords are more specific than status alone.
+    if status == 402 or any(tok in low for tok in _QUOTA_TOKENS):
+        return {"ok": False, "category": "quota", "message": f"余额不足 / 额度用尽{_probe_suffix(err_msg)}"}
+
+    if status in (401, 403):
+        return {"ok": False, "category": "auth", "message": f"令牌无效或已禁用{_probe_suffix(err_msg)}"}
+
+    if status == 429:
+        return {"ok": False, "category": "rate_limit", "message": f"触发限流，稍后重试{_probe_suffix(err_msg)}"}
+
+    if status in (400, 404) and ("model" in low or "模型" in low):
+        return {"ok": False, "category": "model", "message": f"令牌可用，但测试模型不可用{_probe_suffix(err_msg)}"}
+
+    if status >= 500:
+        return {"ok": False, "category": "server", "message": f"中转服务端错误 ({status}){_probe_suffix(err_msg)}"}
+
+    if status == 200:
+        return {"ok": False, "category": "unknown", "message": f"返回 200 但响应格式异常{_probe_suffix(err_msg)}"}
+
+    return {"ok": False, "category": "unknown", "message": f"HTTP {status}{_probe_suffix(err_msg)}"}
+
+
+def _probe_once(endpoint, data, headers):
+    """One request/response round-trip to /v1/messages, already classified."""
+    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=HEALTH_TIMEOUT) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        return {"ok": False, "category": "network", "message": f"无法连接: {str(reason)[:120]}"}
+    except Exception as e:
+        return {"ok": False, "category": "network", "message": f"请求异常: {str(e)[:120]}"}
+    return _classify_probe_response(status, body)
+
+
+def _run_claude_probe(token, base_url, model=HEALTH_MODEL):
+    """Send a Claude Code-shaped request to {base_url}/v1/messages.
+
+    Retries transient failures (503 upstream, 429 rate-limit, network blips)
+    with increasing backoff; deterministic verdicts (auth / quota / model / bad
+    request) return immediately since retrying them is pointless.
+    """
+    endpoint = base_url.rstrip("/") + "/v1/messages?beta=true"
+    payload = {
+        "model": model,
+        "max_tokens": HEALTH_MAX_TOKENS,
+        "system": [
+            {"type": "text", "text": CLAUDE_CODE_SYSTEM,
+             "cache_control": {"type": "ephemeral"}},
+        ],
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "stream": False,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "content-type": "application/json",
+        "accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": HEALTH_ANTHROPIC_BETA,
+        "anthropic-dangerous-direct-browser-access": "true",
+        "authorization": f"Bearer {token}",
+        "x-app": "cli",
+        "user-agent": HEALTH_USER_AGENT,
+        "x-claude-code-session-id": str(uuid.uuid4()),
+        **HEALTH_STAINLESS_HEADERS,
+    }
+
+    result = None
+    for attempt in range(len(HEALTH_RETRY_BACKOFF) + 1):
+        result = _probe_once(endpoint, data, headers)
+        if result.get("ok") or result.get("category") not in HEALTH_RETRY_CATEGORIES:
+            return result
+        if attempt < len(HEALTH_RETRY_BACKOFF):
+            time.sleep(HEALTH_RETRY_BACKOFF[attempt])
+    return result
 
 
 # ── Core operations ────────────────────────────────────────
@@ -1000,11 +1427,19 @@ def do_checkin(name, url, headless=True, timeout=30000):
         with sync_playwright() as p:
             ctx = _launch_ctx(p, profile_dir, headless=headless)
             prepare_checkin_monitor(ctx)
+            signin_state = attach_signin_capture(ctx)
+            diag_records = attach_response_recorder(ctx) if CHECKIN_DIAG_LOG else None
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             page.wait_for_load_state("networkidle", timeout=timeout)
 
-            result_state, message, balance = wait_for_checkin_result(page, url, prev_balance=prev_balance)
+            result_state, message, balance = wait_for_checkin_result(
+                page, url, prev_balance=prev_balance,
+                signin_state=signin_state, account_name=name,
+            )
+
+            if diag_records is not None:
+                dump_response_records(name, diag_records)
 
             ctx.close()
 
@@ -1062,6 +1497,24 @@ def do_refresh_balance(name, url):
         msg = str(e)[:200]
         set_status(name, "idle", message=msg)
         log.error(f"[{name}] 余额刷新异常 - {msg}")
+
+
+def do_check_health(name, url, token):
+    """Probe whether an account can relay a real Claude Code request."""
+    if not token:
+        set_health(name, "failed", "未设置 API 令牌", category="no_token")
+        return
+    set_health(name, "checking", "检测中")
+    try:
+        result = _run_claude_probe(token, url or DEFAULT_URL)
+    except Exception as e:
+        result = {"ok": False, "category": "network", "message": f"请求异常: {str(e)[:120]}"}
+    state = "ok" if result.get("ok") else "failed"
+    set_health(name, state, result.get("message", ""), category=result.get("category"))
+    if result.get("ok"):
+        log.info(f"[{name}] 可用性检测通过 - {result.get('message', '')}")
+    else:
+        log.warning(f"[{name}] 可用性检测失败 - {result.get('message', '')}")
 
 
 def do_open_browser(name, url):
@@ -1352,6 +1805,9 @@ def get_accounts():
             "url": a.get("url", DEFAULT_URL),
             "note": a.get("note", ""),
             "hasSession": has_session(n),
+            "hasToken": bool(a.get("token")),
+            "tokenMask": _mask_token(a.get("token")),
+            "health": _account_health.get(n),
             "state": s.get("state", "idle"),
             "message": s.get("message", ""),
             "balance": s.get("balance") or (last.get("balance") if last else None),
@@ -1418,6 +1874,7 @@ def patch_account(name):
     new_note = data.get("note")
     if new_note is not None:
         new_note = str(new_note).strip()[:200]
+    new_token = data.get("token")
 
     config = load_config()
     idx = next((i for i, a in enumerate(config["accounts"]) if a["name"] == name), -1)
@@ -1448,6 +1905,9 @@ def patch_account(name):
             entry["note"] = new_note
         else:
             entry.pop("note", None)
+
+    if isinstance(new_token, str) and new_token.strip():
+        config["accounts"][idx]["token"] = new_token.strip()
 
     save_config(config)
     return jsonify({"ok": True, "name": current})
@@ -1618,6 +2078,78 @@ def refresh_balance_one(name):
     url = acc.get("url", DEFAULT_URL)
     threading.Thread(target=do_refresh_balance, args=(name, url), daemon=True).start()
     return jsonify({"ok": True})
+
+
+def _health_account_or_error(name):
+    """Pre-flight for health-probe endpoints: needs a token, not a session."""
+    if not _safe_name(name):
+        return None, (jsonify({"error": "账号名包含非法字符"}), 400)
+    config = load_config()
+    acc = next((a for a in config["accounts"] if a["name"] == name), None)
+    if not acc:
+        return None, (jsonify({"error": "Not found"}), 404)
+    if not acc.get("token"):
+        return None, (jsonify({"error": "请先为该账号填写 API 令牌"}), 400)
+    h = _account_health.get(name)
+    if h and h.get("state") == "checking":
+        return None, (jsonify({"error": "该账号正在检测中"}), 409)
+    return acc, None
+
+
+@app.route("/api/check-health/<name>", methods=["POST"])
+@require_auth
+def check_health_one(name):
+    acc, err = _health_account_or_error(name)
+    if err:
+        return err
+    threading.Thread(
+        target=do_check_health,
+        args=(name, acc.get("url", DEFAULT_URL), acc.get("token")),
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/check-health", methods=["POST"])
+@require_auth
+def check_health_all():
+    global _health_busy
+    with _lock:
+        if _health_busy:
+            return jsonify({"error": "Already running"}), 409
+        _health_busy = True
+    try:
+        config = load_config()
+        acc_map = {a["name"]: a for a in config["accounts"] if a.get("token")}
+        if not acc_map:
+            with _lock:
+                _health_busy = False
+            return jsonify({"error": "没有已填写 API 令牌的账号"}), 400
+
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            accounts = [acc_map[n] for n in order if n in acc_map]
+            seen = {a["name"] for a in accounts}
+            accounts += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            accounts = list(acc_map.values())
+    except Exception:
+        with _lock:
+            _health_busy = False
+        raise
+
+    def run():
+        global _health_busy
+        try:
+            for a in accounts:
+                do_check_health(a["name"], a.get("url", DEFAULT_URL), a.get("token"))
+        finally:
+            with _lock:
+                _health_busy = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "count": len(accounts)})
 
 
 @app.route("/api/history")
