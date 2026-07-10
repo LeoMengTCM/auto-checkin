@@ -7,6 +7,7 @@
     python src/checkin.py login <账号名>    # 手动登录并保存会话
     python src/checkin.py checkin [账号名]   # 自动签到（不指定则签到所有）
     python src/checkin.py open <账号名>     # 打开浏览器手动检查状态
+    python src/checkin.py probe [账号名]    # 用 API 令牌检测账号可用性
     python src/checkin.py list              # 查看账号列表
     python src/checkin.py add <账号名>       # 添加新账号到配置
     python src/checkin.py remove <账号名>    # 从配置中移除账号
@@ -212,6 +213,41 @@ def cmd_open(account_name):
     logging.info(f"[{account_name}] 浏览器已关闭（打开地址: {opened_url}）")
 
 
+def cmd_probe(account_name=None):
+    """用账号 API 令牌发一条 Claude Code 测试请求，检测可用性。"""
+    from server import _run_claude_probe, _mask_token
+
+    config = load_config()
+    if account_name:
+        accounts = [a for a in config["accounts"] if a["name"] == account_name]
+        if not accounts:
+            logging.error(f"账号 '{account_name}' 不在配置中。")
+            return
+    else:
+        accounts = config["accounts"]
+
+    targets = [a for a in accounts if a.get("token")]
+    skipped = len(accounts) - len(targets)
+    if not targets:
+        logging.warning("没有已填写 API 令牌的账号。请在 Web UI 编辑账号并填入令牌。")
+        return
+    if skipped:
+        logging.info(f"跳过 {skipped} 个未填写令牌的账号")
+
+    ok_count = 0
+    for a in targets:
+        name = a["name"]
+        logging.info(f"[{name}] 检测中 ({_mask_token(a['token'])}) ...")
+        result = _run_claude_probe(a["token"], a.get("url", DEFAULT_URL))
+        if result.get("ok"):
+            logging.info(f"[{name}] ✅ {result.get('message', '可用')}")
+            ok_count += 1
+        else:
+            logging.warning(f"[{name}] ❌ [{result.get('category')}] {result.get('message', '不可用')}")
+
+    logging.info(f"检测完成: 可用 {ok_count}/{len(targets)}")
+
+
 def cmd_list():
     """列出所有账号"""
     config = load_config()
@@ -282,6 +318,10 @@ def main():
     open_parser = subparsers.add_parser("open", help="打开已保存会话的浏览器，手动检查状态")
     open_parser.add_argument("account", help="账号名称")
 
+    # probe
+    probe_parser = subparsers.add_parser("probe", help="用 API 令牌检测账号可用性")
+    probe_parser.add_argument("account", nargs="?", help="账号名称（不指定则检测所有已填令牌的账号）")
+
     # list
     subparsers.add_parser("list", help="查看账号列表")
 
@@ -304,6 +344,8 @@ def main():
         cmd_checkin(args.account)
     elif args.command == "open":
         cmd_open(args.account)
+    elif args.command == "probe":
+        cmd_probe(args.account)
     elif args.command == "list":
         cmd_list()
     elif args.command == "add":

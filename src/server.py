@@ -2,15 +2,18 @@
 """AnyRouter Check-in Web Server"""
 
 import json
+import random
 import re
 import shutil
 import threading
 import uuid
 import logging
+import logging.handlers
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, date
+import urllib.parse
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 from functools import wraps
@@ -24,6 +27,21 @@ log = logging.getLogger("checkin")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = BASE_DIR / "logs"
+
+
+def _setup_file_logging():
+    """Mirror server logs to a rotating file so scheduled runs are auditable."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_DIR / "server.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logging.getLogger().addHandler(handler)
+    except Exception as e:
+        log.warning(f"无法写入日志文件: {e}")
+
 CONFIG_FILE = BASE_DIR / "config" / "accounts.json"
 PROFILES_DIR = BASE_DIR / "data" / "profiles"
 HISTORY_FILE = BASE_DIR / "data" / "history.json"
@@ -151,8 +169,12 @@ def load_history():
     with _io_lock:
         if not HISTORY_FILE.exists():
             return []
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("history", [])
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("history", [])
+        except Exception as e:
+            log.warning(f"历史文件损坏，按空历史处理: {e}")
+            return []
 
 
 def append_history(entry):
@@ -209,6 +231,25 @@ def set_health(name, state, message="", category=None):
             "category": category,
             "time": datetime.now().isoformat(),
         }
+
+
+def try_claim_health(name):
+    """Atomically mark an account as being probed.
+
+    Returns False if a probe is already in flight — check-and-set under the
+    same lock, so two overlapping requests can't both start a probe.
+    """
+    with _lock:
+        h = _account_health.get(name)
+        if h and h.get("state") == "checking":
+            return False
+        _account_health[name] = {
+            "state": "checking",
+            "message": "检测中",
+            "category": None,
+            "time": datetime.now().isoformat(),
+        }
+        return True
 
 
 def get_account_state(name):
@@ -1118,7 +1159,7 @@ def wait_for_checkin_result(page, url, prev_balance=None,
     # anyrouter no longer fires sign_in on re-visit and shows no banner —
     # treat as "already checked in" instead of uncertain.
     if username and account_name and checked_today(account_name):
-        message = f"今日已签到 (会话有效，无新签到信号)"
+        message = "今日已签到 (会话有效，无新签到信号)"
         return "success", _append_balance_message(message, balance), balance
 
     if username:
@@ -1500,11 +1541,14 @@ def do_refresh_balance(name, url):
 
 
 def do_check_health(name, url, token):
-    """Probe whether an account can relay a real Claude Code request."""
+    """Probe whether an account can relay a real Claude Code request.
+
+    Callers must have claimed the account via `try_claim_health` first, so the
+    "checking" state is already visible before this thread starts.
+    """
     if not token:
         set_health(name, "failed", "未设置 API 令牌", category="no_token")
         return
-    set_health(name, "checking", "检测中")
     try:
         result = _run_claude_probe(token, url or DEFAULT_URL)
     except Exception as e:
@@ -1716,6 +1760,208 @@ def do_login_new(url):
     log.info(f"New account added: {final_name}")
 
 
+# ── Notifications ──────────────────────────────────────────
+# One URL, three shapes: Bark (api.day.app) and Server酱 (ftqq.com) get their
+# native payloads; anything else gets a generic JSON POST {title, body}.
+
+NOTIFY_TIMEOUT = 15
+
+
+def send_notification(title, body):
+    """Send a push notification. Returns (ok, error_message)."""
+    config = load_config()
+    url = ((config.get("notify") or {}).get("url") or "").strip()
+    if not url:
+        return False, "未配置通知 URL"
+    if not url.startswith(("http://", "https://")):
+        return False, "通知 URL 必须以 http(s):// 开头"
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+        if "day.app" in host:  # Bark
+            payload = json.dumps({"title": title, "body": body, "group": "anyrouter"}).encode()
+            req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"content-type": "application/json; charset=utf-8"},
+            )
+        elif "ftqq.com" in host:  # Server酱
+            payload = urllib.parse.urlencode({"title": title, "desp": body}).encode()
+            req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+            )
+        else:  # Generic webhook
+            payload = json.dumps({"title": title, "body": body}, ensure_ascii=False).encode()
+            req = urllib.request.Request(
+                url, data=payload, method="POST",
+                headers={"content-type": "application/json; charset=utf-8"},
+            )
+        with urllib.request.urlopen(req, timeout=NOTIFY_TIMEOUT) as resp:
+            if resp.status >= 400:
+                return False, f"HTTP {resp.status}"
+        return True, ""
+    except urllib.error.HTTPError as e:
+        return False, f"HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)[:150]
+
+
+# ── Scheduled auto check-in ────────────────────────────────
+# A daemon thread wakes every 30s, reloads config (so settings changes apply
+# without restart), and runs a batch check-in once per day at the configured
+# time plus a random jitter. If the server starts (or the schedule is enabled)
+# after today's slot has already passed and some account hasn't checked in yet,
+# it catches up within a couple of minutes instead of waiting until tomorrow.
+
+SCHEDULE_DEFAULTS = {"enabled": False, "time": "09:00", "jitter_minutes": 20}
+SCHEDULER_TICK_SECONDS = 30
+
+_schedule_state = {"next_run": None, "last_run_date": None, "cfg_key": None}
+
+
+def _parse_hhmm(value):
+    """Parse 'HH:MM' → (hour, minute), or None if malformed."""
+    if not isinstance(value, str):
+        return None
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if 0 <= h < 24 and 0 <= mi < 60:
+        return h, mi
+    return None
+
+
+def get_schedule_config(config=None):
+    if config is None:
+        config = load_config()
+    raw = config.get("schedule") or {}
+    cfg = dict(SCHEDULE_DEFAULTS)
+    cfg["enabled"] = bool(raw.get("enabled", cfg["enabled"]))
+    if _parse_hhmm(raw.get("time")):
+        cfg["time"] = raw["time"].strip()
+    try:
+        cfg["jitter_minutes"] = max(0, min(120, int(raw.get("jitter_minutes", cfg["jitter_minutes"]))))
+    except (TypeError, ValueError):
+        pass
+    return cfg
+
+
+def compute_next_run(now, time_str, jitter_minutes, catch_up=False):
+    """Next datetime the scheduled check-in should fire.
+
+    Base slot is today at `time_str`; jitter adds 0..N minutes so runs don't
+    land on the exact same second every day. If today's slot already passed:
+    with catch_up, run in 1-3 minutes (missed slot, e.g. the Mac was asleep);
+    otherwise schedule tomorrow's slot.
+    """
+    h, mi = _parse_hhmm(time_str) or (9, 0)
+    base = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+    if base <= now:
+        if catch_up:
+            return now + timedelta(seconds=random.randint(60, 180))
+        base += timedelta(days=1)
+    return base + timedelta(seconds=random.randint(0, max(0, jitter_minutes) * 60))
+
+
+def _summarize_batch(names):
+    """Build a per-account result summary from the freshest status entries."""
+    with _lock:
+        snap = {n: dict(_account_status.get(n) or {}) for n in names}
+    lines = []
+    counts = {"success": 0, "failed": 0, "uncertain": 0, "other": 0}
+    for n in names:
+        s = snap.get(n, {})
+        state = s.get("state", "unknown")
+        counts[state if state in counts else "other"] += 1
+        icon = {"success": "✅", "failed": "❌", "uncertain": "⚠️"}.get(state, "•")
+        msg = (s.get("message") or state)[:80]
+        lines.append(f"{icon} {n}: {msg}")
+    title = f"签到完成: 成功 {counts['success']}/{len(names)}"
+    if counts["failed"]:
+        title += f"，失败 {counts['failed']}"
+    if counts["uncertain"]:
+        title += f"，待确认 {counts['uncertain']}"
+    return title, "\n".join(lines)
+
+
+def run_scheduled_checkin():
+    """Batch check-in for all eligible accounts, then notify. Runs in the
+    scheduler thread; shares the `_busy` flag with the manual batch endpoint."""
+    global _busy
+    with _lock:
+        if _busy:
+            log.info("定时签到: 已有批量任务在运行，本次跳过")
+            return
+        _busy = True
+    try:
+        config = load_config()
+        with _lock:
+            busy_names = {
+                name for name, status in _account_status.items()
+                if status.get("state") in ACTIVE_ACCOUNT_STATES
+            }
+        accounts = [
+            a for a in config["accounts"]
+            if has_session(a["name"]) and a["name"] not in busy_names
+            and not checked_today(a["name"])
+        ]
+        if not accounts:
+            log.info("定时签到: 所有账号今日均已签到，无需运行")
+            return
+        headless = config.get("headless", True)
+        timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
+        names = [a["name"] for a in accounts]
+        log.info(f"定时签到开始，共 {len(names)} 个账号: {', '.join(names)}")
+        for a in accounts:
+            do_checkin(a["name"], a.get("url", DEFAULT_URL), headless, timeout)
+        title, body = _summarize_batch(names)
+        log.info(f"定时签到结束 - {title}")
+        ok, err = send_notification(f"AnyRouter {title}", body)
+        if not ok and err != "未配置通知 URL":
+            log.warning(f"通知发送失败: {err}")
+    finally:
+        with _lock:
+            _busy = False
+
+
+def scheduler_loop():
+    while True:
+        try:
+            cfg = get_schedule_config()
+            if not cfg["enabled"]:
+                with _lock:
+                    _schedule_state["next_run"] = None
+                    _schedule_state["cfg_key"] = None
+            else:
+                key = (cfg["time"], cfg["jitter_minutes"])
+                with _lock:
+                    next_run = _schedule_state["next_run"]
+                    stale = _schedule_state["cfg_key"] != key or next_run is None
+                    last_run_date = _schedule_state["last_run_date"]
+                if stale:
+                    catch_up = last_run_date != date.today().isoformat()
+                    next_run = compute_next_run(datetime.now(), cfg["time"],
+                                                cfg["jitter_minutes"], catch_up=catch_up)
+                    with _lock:
+                        _schedule_state["next_run"] = next_run
+                        _schedule_state["cfg_key"] = key
+                    log.info(f"定时签到已排程: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+                if datetime.now() >= next_run:
+                    run_scheduled_checkin()
+                    tomorrow = compute_next_run(datetime.now(), cfg["time"], cfg["jitter_minutes"])
+                    with _lock:
+                        _schedule_state["last_run_date"] = date.today().isoformat()
+                        _schedule_state["next_run"] = tomorrow
+                    log.info(f"下次定时签到: {tomorrow.strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception as e:
+            log.error(f"定时任务异常: {e}")
+        time.sleep(SCHEDULER_TICK_SECONDS)
+
+
+def start_scheduler():
+    threading.Thread(target=scheduler_loop, daemon=True, name="scheduler").start()
+
+
 # ── Routes ─────────────────────────────────────────────────
 
 @app.route("/")
@@ -1795,10 +2041,14 @@ def get_accounts():
         if n not in last_map:
             last_map[n] = entry
 
+    with _lock:
+        status_snap = {k: dict(v) for k, v in _account_status.items()}
+        health_snap = {k: dict(v) for k, v in _account_health.items()}
+
     result = []
     for a in config["accounts"]:
         n = a["name"]
-        s = _account_status.get(n, {})
+        s = status_snap.get(n, {})
         last = last_map.get(n)
         result.append({
             "name": n,
@@ -1807,7 +2057,7 @@ def get_accounts():
             "hasSession": has_session(n),
             "hasToken": bool(a.get("token")),
             "tokenMask": _mask_token(a.get("token")),
-            "health": _account_health.get(n),
+            "health": health_snap.get(n),
             "state": s.get("state", "idle"),
             "message": s.get("message", ""),
             "balance": s.get("balance") or (last.get("balance") if last else None),
@@ -1848,6 +2098,7 @@ def remove_account(name):
         shutil.rmtree(d)
     with _lock:
         _account_status.pop(name, None)
+        _account_health.pop(name, None)
     return jsonify({"ok": True})
 
 
@@ -1874,7 +2125,6 @@ def patch_account(name):
     new_note = data.get("note")
     if new_note is not None:
         new_note = str(new_note).strip()[:200]
-    new_token = data.get("token")
 
     config = load_config()
     idx = next((i for i, a in enumerate(config["accounts"]) if a["name"] == name), -1)
@@ -1897,6 +2147,8 @@ def patch_account(name):
         with _lock:
             if name in _account_status:
                 _account_status[new_name] = _account_status.pop(name)
+            if name in _account_health:
+                _account_health[new_name] = _account_health.pop(name)
         current = new_name
 
     if new_note is not None:
@@ -1906,8 +2158,16 @@ def patch_account(name):
         else:
             entry.pop("note", None)
 
-    if isinstance(new_token, str) and new_token.strip():
-        config["accounts"][idx]["token"] = new_token.strip()
+    # Token: key absent = keep as-is; null or empty string = clear; non-empty = replace.
+    if "token" in data:
+        new_token = data.get("token")
+        if isinstance(new_token, str) and new_token.strip():
+            config["accounts"][idx]["token"] = new_token.strip()
+        else:
+            config["accounts"][idx].pop("token", None)
+            with _lock:
+                _account_health.pop(current, None)
+                _account_health.pop(name, None)
 
     save_config(config)
     return jsonify({"ok": True, "name": current})
@@ -2090,9 +2350,6 @@ def _health_account_or_error(name):
         return None, (jsonify({"error": "Not found"}), 404)
     if not acc.get("token"):
         return None, (jsonify({"error": "请先为该账号填写 API 令牌"}), 400)
-    h = _account_health.get(name)
-    if h and h.get("state") == "checking":
-        return None, (jsonify({"error": "该账号正在检测中"}), 409)
     return acc, None
 
 
@@ -2102,6 +2359,8 @@ def check_health_one(name):
     acc, err = _health_account_or_error(name)
     if err:
         return err
+    if not try_claim_health(name):
+        return jsonify({"error": "该账号正在检测中"}), 409
     threading.Thread(
         target=do_check_health,
         args=(name, acc.get("url", DEFAULT_URL), acc.get("token")),
@@ -2134,6 +2393,13 @@ def check_health_all():
             accounts += [a for a in acc_map.values() if a["name"] not in seen]
         else:
             accounts = list(acc_map.values())
+        # Claim every account upfront: they all show "检测中" immediately, and
+        # a concurrent single-account probe can't race into the batch.
+        accounts = [a for a in accounts if try_claim_health(a["name"])]
+        if not accounts:
+            with _lock:
+                _health_busy = False
+            return jsonify({"error": "所有账号都在检测中"}), 409
     except Exception:
         with _lock:
             _health_busy = False
@@ -2152,6 +2418,66 @@ def check_health_all():
     return jsonify({"ok": True, "count": len(accounts)})
 
 
+@app.route("/api/settings")
+@require_auth
+def get_settings():
+    config = load_config()
+    with _lock:
+        next_run = _schedule_state["next_run"]
+    return jsonify({
+        "schedule": get_schedule_config(config),
+        "notify": {"url": (config.get("notify") or {}).get("url", "")},
+        "nextRun": next_run.isoformat() if next_run else None,
+    })
+
+
+@app.route("/api/settings", methods=["PUT"])
+@require_auth
+def put_settings():
+    data = request.get_json(silent=True) or {}
+    config = load_config()
+
+    if "schedule" in data:
+        raw = data.get("schedule") or {}
+        time_str = str(raw.get("time", SCHEDULE_DEFAULTS["time"])).strip()
+        if not _parse_hhmm(time_str):
+            return jsonify({"error": "时间格式应为 HH:MM"}), 400
+        try:
+            jitter = max(0, min(120, int(raw.get("jitter_minutes", SCHEDULE_DEFAULTS["jitter_minutes"]))))
+        except (TypeError, ValueError):
+            return jsonify({"error": "随机延迟应为 0-120 的整数"}), 400
+        config["schedule"] = {
+            "enabled": bool(raw.get("enabled")),
+            "time": time_str,
+            "jitter_minutes": jitter,
+        }
+
+    if "notify" in data:
+        url = str((data.get("notify") or {}).get("url", "")).strip()
+        if url and not url.startswith(("http://", "https://")):
+            return jsonify({"error": "通知 URL 必须以 http(s):// 开头"}), 400
+        if url:
+            config["notify"] = {"url": url}
+        else:
+            config.pop("notify", None)
+
+    save_config(config)
+    # Invalidate the scheduler's cached plan so the new settings apply on the
+    # next tick (~30s) instead of at the old slot.
+    with _lock:
+        _schedule_state["cfg_key"] = None
+    return jsonify({"ok": True})
+
+
+@app.route("/api/notify/test", methods=["POST"])
+@require_auth
+def notify_test():
+    ok, err = send_notification("AnyRouter 测试通知", "通知配置成功，签到结果将推送到这里。")
+    if ok:
+        return jsonify({"ok": True})
+    return jsonify({"error": f"发送失败: {err}"}), 400
+
+
 @app.route("/api/history")
 @require_auth
 def get_history():
@@ -2161,6 +2487,11 @@ def get_history():
 if __name__ == "__main__":
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
+    _setup_file_logging()
+    start_scheduler()
+    _config = load_config()
+    _host = _config.get("host", "127.0.0.1")
+    _port = int(_config.get("port", 8686))
     print("\n  AnyRouter 签到助手")
-    print("  http://localhost:8686\n")
-    app.run(host="127.0.0.1", port=8686, debug=False)
+    print(f"  http://{'localhost' if _host in ('127.0.0.1', '0.0.0.0') else _host}:{_port}\n")
+    app.run(host=_host, port=_port, debug=False)
