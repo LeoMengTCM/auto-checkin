@@ -53,6 +53,46 @@ class TestParseBalance(unittest.TestCase):
         self.assertIsNone(server._parse_balance_value("abc"))
 
 
+class TestSessionExpiry(unittest.TestCase):
+    class LoginPage:
+        def evaluate(self, script):
+            if script == server.CHECK_LOGIN_PAGE_JS:
+                return True
+            return {}
+
+    def test_login_page_is_classified_as_session_expired(self):
+        result = server.detect_checkin_status(self.LoginPage(), server.DEFAULT_URL)
+        self.assertEqual(result["state"], "session_expired")
+        self.assertIn("会话已过期", result["message"])
+
+
+class TestDetectSite(unittest.TestCase):
+    def test_known_hosts(self):
+        self.assertEqual(server.detect_site("https://anyrouter.top"), server.SITE_ANYROUTER)
+        self.assertEqual(server.detect_site("https://agentrouter.org"), server.SITE_AGENTROUTER)
+
+    def test_backup_domain_and_subdomain(self):
+        self.assertEqual(server.detect_site("https://ps.air-outer.com"), server.SITE_AGENTROUTER)
+        self.assertEqual(server.detect_site("https://www.agentrouter.org"), server.SITE_AGENTROUTER)
+
+    def test_unknown_and_invalid_fall_back_to_anyrouter(self):
+        self.assertEqual(server.detect_site("https://example.com"), server.SITE_ANYROUTER)
+        self.assertEqual(server.detect_site(""), server.SITE_ANYROUTER)
+        self.assertEqual(server.detect_site(None), server.SITE_ANYROUTER)
+
+    def test_health_model_defaults(self):
+        self.assertEqual(server.health_model_for("https://agentrouter.org"), "deepseek-v4-flash")
+        self.assertIsNone(server.health_model_for("https://anyrouter.top"))
+
+
+class TestCheckinConcurrency(unittest.TestCase):
+    def test_worker_count_is_bounded(self):
+        self.assertEqual(server._checkin_worker_count(0), 0)
+        self.assertEqual(server._checkin_worker_count(1), 1)
+        self.assertEqual(server._checkin_worker_count(10), 2)
+        self.assertEqual(server._checkin_worker_count(10, 3), 3)
+
+
 class TestClassifyProbeResponse(unittest.TestCase):
     def _ok_body(self, text="OK"):
         return json.dumps({

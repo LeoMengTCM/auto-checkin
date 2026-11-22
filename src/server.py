@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AnyRouter Check-in Web Server"""
+"""Router Check-in Web Server (AnyRouter / AgentRouter)"""
 
 import json
 import random
@@ -13,6 +13,7 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -47,8 +48,61 @@ PROFILES_DIR = BASE_DIR / "data" / "profiles"
 HISTORY_FILE = BASE_DIR / "data" / "history.json"
 DEFAULT_URL = "https://anyrouter.top"
 DEFAULT_TIMEOUT = 30
-CHECKIN_RESULT_WAIT_MS = 20000
-CHECKIN_RESULT_POLL_MS = 500
+
+# Site adapters. anyrouter signs in when the console page is visited (it fires
+# POST /api/user/sign_in on load). agentrouter is a New API fork with no
+# standalone check-in endpoint in its UI: the daily check-in happens inside a
+# successful login response (`checked_in` on the returned user object), so an
+# already-logged-in session never triggers it.
+SITE_ANYROUTER = "anyrouter"
+SITE_AGENTROUTER = "agentrouter"
+
+SITE_BY_HOST = {
+    "anyrouter.top": SITE_ANYROUTER,
+    "agentrouter.org": SITE_AGENTROUTER,
+    # agentrouter's backup domain, fully equivalent to the main one.
+    "ps.air-outer.com": SITE_AGENTROUTER,
+}
+
+SITE_LABELS = {
+    SITE_ANYROUTER: "AnyRouter",
+    SITE_AGENTROUTER: "AgentRouter",
+}
+
+# agentrouter keeps its Claude model restricted to the svip/test groups, so a
+# broadly available anthropic-endpoint model is the better availability probe
+# there. anyrouter keeps the Opus probe.
+SITE_HEALTH_MODELS = {
+    SITE_AGENTROUTER: "deepseek-v4-flash",
+}
+
+
+def health_model_for(url):
+    return SITE_HEALTH_MODELS.get(detect_site(url))
+
+
+def detect_site(url):
+    """Map an account URL to its site adapter key.
+
+    Unknown hosts fall back to the anyrouter flow, which is the historical
+    behaviour for every account created before multi-site support.
+    """
+    try:
+        host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+    except Exception:
+        host = ""
+    if host in SITE_BY_HOST:
+        return SITE_BY_HOST[host]
+    for known, site in SITE_BY_HOST.items():
+        if host.endswith("." + known):
+            return site
+    return SITE_ANYROUTER
+# Most successful sign-in responses arrive almost immediately. Keep a short
+# fallback window for slow pages, rather than making every uncertain run wait
+# twenty seconds before returning.
+CHECKIN_RESULT_WAIT_MS = 8000
+CHECKIN_RESULT_POLL_MS = 250
+CHECKIN_MAX_CONCURRENCY = 2
 
 # One-shot diagnostic toggle: dump all check-in network responses to the log
 # so we can see anyrouter's real sign-in endpoint & payload shape, then write
@@ -74,22 +128,27 @@ _busy = False
 _refreshing = False
 _health_busy = False
 _io_lock = threading.RLock()
-ACTIVE_ACCOUNT_STATES = {"checking", "logging_in", "refreshing", "inspecting"}
+ACTIVE_ACCOUNT_STATES = {"queued", "checking", "logging_in", "refreshing", "inspecting"}
 
 
-def _launch_ctx(p, profile_dir, headless=False):
+def _launch_ctx(p, profile_dir, headless=False, user_agent=None):
     """Launch a persistent browser context using system Chrome.
 
     Follows patchright's stealth best practices: system Chrome via channel,
     natural viewport, no custom locale/UA/headers. Any extra fingerprinting
     option we add here becomes a signal Cloudflare Turnstile can score.
+
+    `user_agent` is only needed for headless Cloudflare-protected third-party
+    pages (the default headless UA says "HeadlessChrome" and gets challenged).
     """
-    return p.chromium.launch_persistent_context(
-        profile_dir,
-        channel="chrome",
-        headless=headless,
-        no_viewport=True,
-    )
+    kwargs = {
+        "channel": "chrome",
+        "headless": headless,
+        "no_viewport": True,
+    }
+    if user_agent:
+        kwargs["user_agent"] = user_agent
+    return p.chromium.launch_persistent_context(profile_dir, **kwargs)
 
 
 # ── Config helpers ─────────────────────────────────────────
@@ -259,6 +318,8 @@ def get_account_state(name):
 
 def get_account_busy_error(name):
     state = get_account_state(name)
+    if state == "queued":
+        return "该账号已在签到队列中"
     if state == "checking":
         return "该账号正在签到"
     if state == "logging_in":
@@ -987,6 +1048,371 @@ def attach_signin_capture(ctx):
     return state
 
 
+# ── AgentRouter adapter ────────────────────────────────────
+# agentrouter awards its daily check-in when a logged-in user opens the
+# console. The page never calls a sign-in endpoint: the server performs the
+# daily check-in on its own and records it as a system log entry
+# ("每日签到成功，增加额度 $25"). So the automated flow is a plain authenticated
+# visit, followed by reading today's system log to confirm the award.
+
+AGENTROUTER_CHECKIN_LOG_TYPE = 4  # New API LogTypeSystem
+
+
+def _agentrouter_visit_and_read(page):
+    """Trigger the daily check-in with a normal console visit, then read today's log.
+
+    Returns {"balance": str|None, "today": dict|None, "error": str|None}.
+    """
+    result = page.evaluate(r"""async () => {
+        try {
+            const uid = (() => {
+                try { return JSON.parse(localStorage.getItem('user') || '{}').id; } catch (e) { return null; }
+            })();
+            if (!uid) return { error: 'not_logged_in' };
+            const headers = {'New-Api-User': String(uid)};
+
+            // A normal console visit fetches the profile; the site performs the
+            // daily check-in alongside it. Call it explicitly so the visit is
+            // not dependent on which console widgets happened to render.
+            const selfRes = await fetch('/api/user/self', { headers });
+            const self = await selfRes.json();
+            const quota = self && self.data ? self.data.quota : null;
+            let unit = 500000;
+            try {
+                const st = JSON.parse(localStorage.getItem('status') || '{}');
+                if (Number(st.quota_per_unit) > 0) unit = Number(st.quota_per_unit);
+            } catch (e) {}
+            const balance = typeof quota === 'number' && quota > 0
+                ? '$' + (quota / unit).toFixed(2) : null;
+
+            const logRes = await fetch('/api/log/self/?p=1&page_size=20&type=4', { headers });
+            const logs = await logRes.json();
+            const items = (logs && logs.data && logs.data.items) || [];
+            const now = new Date();
+            const todays = items.filter(it => {
+                if (!(it.content || '').includes('签到')) return false;
+                const d = new Date((it.created_at || 0) * 1000);
+                return d.getFullYear() === now.getFullYear()
+                    && d.getMonth() === now.getMonth()
+                    && d.getDate() === now.getDate();
+            });
+            return {
+                balance,
+                today: todays[0] ? {content: todays[0].content, created_at: todays[0].created_at} : null,
+                error: self && self.success === false ? (self.message || 'self_failed') : null,
+            };
+        } catch (e) {
+            return { error: String(e) };
+        }
+    }""")
+    return result if isinstance(result, dict) else {"error": "evaluate_failed"}
+
+
+AGENTROUTER_HEADLESS_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+)
+LINUXDO_AUTHORIZE_URL = "https://connect.linux.do/oauth2/authorize"
+LINUXDO_APPROVE_SELECTORS = (
+    "a:has-text('允许')",
+    "a:has-text('Allow')",
+    "a:has-text('授权')",
+    "a:has-text('Authorize')",
+    "button:has-text('授权')",
+    "button:has-text('Authorize')",
+    "button:has-text('允许')",
+    "input[type='submit']",
+)
+AGENTROUTER_LOGIN_WAIT_MS = 40000
+
+
+def _agentrouter_session_cookie(ctx):
+    try:
+        for c in ctx.cookies():
+            if c.get("name") == "session" and "agentrouter.org" in (c.get("domain") or ""):
+                return c
+    except Exception:
+        pass
+    return None
+
+
+def _agentrouter_logout(ctx, page):
+    """Clear the httpOnly session cookie that actually holds the login state.
+
+    localStorage only keeps a display copy of the user (access_token is null),
+    so clearing it alone leaves the browser logged in, and the OAuth callback
+    answers "该 Linux DO 账户已被绑定" instead of performing a fresh login.
+    """
+    try:
+        ctx.clear_cookies(name="session", domain="agentrouter.org")
+    except TypeError:
+        try:
+            ctx.add_cookies([{
+                "name": "session", "value": "", "domain": "agentrouter.org",
+                "path": "/", "expires": 0,
+            }])
+        except Exception:
+            pass
+    try:
+        page.evaluate("() => { try { localStorage.removeItem('user'); } catch (e) {} }")
+    except Exception:
+        pass
+
+
+def _linuxdo_login_expired(pg):
+    """True when the OAuth popup landed on LinuxDo's own login form."""
+    try:
+        url = pg.url or ""
+        if "linux.do" not in url:
+            return False
+        return bool(pg.evaluate(r"""(() => {
+            const inputs = document.querySelectorAll('input[type="password"]');
+            for (const i of inputs) {
+                const r = i.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) return true;
+            }
+            return false;
+        })()"""))
+    except Exception:
+        return False
+
+
+def _approve_linuxdo(oauth_page):
+    """Click LinuxDo's consent link when the authorization page asks for it."""
+    for sel in LINUXDO_APPROVE_SELECTORS:
+        try:
+            loc = oauth_page.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=3000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _read_oauth_params(page):
+    """Fetch the LinuxDO client id + OAuth state from the login page.
+
+    The page may still be settling right after navigation, in which case a
+    fetch can return an empty body; retry a few times instead of giving up.
+    """
+    info = None
+    for attempt in range(4):
+        try:
+            info = page.evaluate(r"""async () => {
+                try {
+                    const stRes = await fetch('/api/status');
+                    const st = await stRes.json();
+                    const smRes = await fetch('/api/oauth/state?mode=login');
+                    const smText = await smRes.text();
+                    let sm = null;
+                    try { sm = JSON.parse(smText); } catch (e) {}
+                    return {
+                        clientId: (st && st.data && st.data.linuxdo_client_id) || '',
+                        state: (sm && sm.data) || '',
+                        status: smRes.status,
+                        empty: !smText,
+                    };
+                } catch (e) { return { error: String(e) }; }
+            }""")
+        except Exception as e:
+            info = {"error": str(e)}
+        if isinstance(info, dict) and info.get("clientId") and info.get("state"):
+            return info
+        # A 429 is a site-wide rate limit: retrying immediately makes it worse.
+        if isinstance(info, dict) and info.get("status") == 429:
+            return {"error": "OAuth 状态接口被限流 (429)，请稍后再试"}
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            break
+    return info if isinstance(info, dict) else {"error": str(info)}
+
+
+def _open_linuxdo_authorize(ctx, page, timeout_ms=25000):
+    """Start the LinuxDO OAuth flow in a new tab.
+
+    Reading `/api/oauth/state` from the page keeps this independent of the
+    login button's markup. Returns (popup_page_or_None, error_or_None).
+    """
+    info = _read_oauth_params(page)
+    if not info.get("clientId") or not info.get("state"):
+        return None, f"获取 OAuth 参数失败: {info}"
+    auth_url = (
+        f"{LINUXDO_AUTHORIZE_URL}?response_type=code"
+        f"&client_id={urllib.parse.quote(str(info['clientId']))}"
+        f"&state={urllib.parse.quote(str(info['state']))}"
+    )
+    oauth_page = ctx.new_page()
+    try:
+        oauth_page.goto(auth_url, wait_until="domcontentloaded", timeout=timeout_ms)
+    except Exception as e:
+        return oauth_page, f"打开授权页失败: {str(e)[:100]}"
+    return oauth_page, None
+
+
+def _agentrouter_oauth_login(ctx, page, timeout_ms=AGENTROUTER_LOGIN_WAIT_MS):
+    """Replay the LinuxDO OAuth login and return the detected username.
+
+    Shared by the import flow. Assumes the browser is already on agentrouter's
+    login page. Returns None when the flow cannot complete.
+    """
+    oauth_page, err = _open_linuxdo_authorize(ctx, page)
+    if err:
+        log.info(f"  {err}")
+        return None
+
+    approved = False
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000
+    found = None
+    try:
+        while time.monotonic() < deadline:
+            try:
+                found = extract_username(page, log_detect=True)
+                if found:
+                    break
+            except Exception:
+                pass
+
+            if oauth_page is not None:
+                try:
+                    if oauth_page.is_closed():
+                        oauth_page = None
+                    elif _linuxdo_login_expired(oauth_page):
+                        break
+                    elif not approved:
+                        approved = _approve_linuxdo(oauth_page)
+                except Exception:
+                    oauth_page = None
+            elif time.monotonic() - started > 3:
+                break
+
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                break
+    finally:
+        if oauth_page is not None:
+            try:
+                if not oauth_page.is_closed():
+                    oauth_page.close()
+            except Exception:
+                pass
+    return found
+
+
+def run_agentrouter_checkin(ctx, name, url, timeout_ms=30000, prev_balance=None,
+                            checked_today_fn=None):
+    """Re-login via LinuxDO, then confirm today's check-in from the system log.
+
+    agentrouter awards the daily check-in inside a successful login. A browser
+    that is already logged in never re-runs that path, so the flow logs out
+    (clearing the httpOnly session cookie) and replays the OAuth login. The
+    login state is restored from the backup if the flow cannot complete.
+    """
+    is_checked_today = checked_today_fn or checked_today
+    login_url = url.rstrip("/") + "/login"
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+    try:
+        page.goto(url.rstrip("/") + "/console",
+                  wait_until="domcontentloaded", timeout=timeout_ms)
+        page.wait_for_timeout(1200)
+    except Exception:
+        pass
+
+    cookie_backup = _agentrouter_session_cookie(ctx)
+    _agentrouter_logout(ctx, page)
+
+    try:
+        page.goto(login_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 8000))
+        except Exception:
+            pass
+    except Exception as e:
+        return "failed", f"打开登录页失败: {str(e)[:120]}", None
+
+    oauth_page, oauth_err = _open_linuxdo_authorize(ctx, page)
+    if oauth_err:
+        log.info(f"[AR:{name}] {oauth_err}")
+        if cookie_backup:
+            try:
+                ctx.add_cookies([cookie_backup])
+            except Exception:
+                pass
+        return "failed", f"启动 LinuxDO 登录失败: {oauth_err}", None
+
+    approved = False
+    expired = False
+    logged_in = False
+    started = time.monotonic()
+    deadline = started + AGENTROUTER_LOGIN_WAIT_MS / 1000
+    while time.monotonic() < deadline:
+        # The OAuth callback page stores the login payload in localStorage;
+        # its presence means the login (and the daily check-in) completed.
+        try:
+            user = page.evaluate(
+                "() => { try { return JSON.parse(localStorage.getItem('user') || 'null'); }"
+                " catch (e) { return null; } }"
+            )
+            if isinstance(user, dict) and user.get("id"):
+                logged_in = True
+                break
+        except Exception:
+            pass
+
+        if oauth_page is not None:
+            try:
+                if oauth_page.is_closed():
+                    oauth_page = None
+                else:
+                    if _linuxdo_login_expired(oauth_page):
+                        expired = True
+                        break
+                    if not approved:
+                        approved = _approve_linuxdo(oauth_page)
+            except Exception:
+                oauth_page = None
+        elif time.monotonic() - started > 3:
+            break
+
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            break
+
+    if oauth_page is not None:
+        try:
+            if not oauth_page.is_closed():
+                oauth_page.close()
+        except Exception:
+            pass
+
+    if not logged_in:
+        if cookie_backup:
+            try:
+                ctx.add_cookies([cookie_backup])
+            except Exception:
+                pass
+        if expired:
+            return "needs_login", "LinuxDo 会话已过期，请手动重新登录一次", None
+        return "uncertain", "未能完成 LinuxDO 重新登录，请手动确认或重新登录", None
+
+    read = _agentrouter_visit_and_read(page)
+    balance = read.get("balance")
+    today = read.get("today")
+    if today:
+        content = (today.get("content") or "签到成功").strip()
+        message = content if not balance else f"{content} (余额: {balance})"
+        return "success", message, balance
+    if is_checked_today(name):
+        return "success", _append_balance_message("今日已签到", balance), balance
+    return "uncertain", _append_balance_message(
+        "重新登录成功，但今日签到记录尚未出现，请手动确认", balance), balance
+
+
 def _append_balance_message(message, balance):
     if balance:
         return f"{message} (余额: {balance})"
@@ -1015,7 +1441,7 @@ def detect_checkin_status(page, url):
     # Check 1: Is this a login page? (session expired)
     try:
         if page.evaluate(CHECK_LOGIN_PAGE_JS):
-            return {"state": "failed", "message": "会话已过期，被重定向到登录页"}
+            return {"state": "session_expired", "message": "会话已过期，被重定向到登录页"}
     except Exception:
         pass
 
@@ -1119,6 +1545,9 @@ def wait_for_checkin_result(page, url, prev_balance=None,
             balance = extract_balance(page)
             return "success", _append_balance_message(status["message"], balance), balance
 
+        if status["state"] == "session_expired":
+            return "failed", status["message"], None
+
         if status["state"] == "failed":
             balance = extract_balance(page)
             return "failed", _append_balance_message(status["message"], balance), balance
@@ -1192,6 +1621,17 @@ EXTRACT_BALANCE_JS = r"""
     const text = document.body?.innerText || '';
     const m = text.match(/当前余额[\s\S]{0,20}(\$[\d,.]+)/);
     if (m) return m[1];
+
+    // Fallback for New API forks (agentrouter): the console caches the raw
+    // quota in localStorage, with quota_per_unit tokens per dollar.
+    try {
+        const st = JSON.parse(localStorage.getItem('status') || '{}');
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        const unit = Number(st.quota_per_unit || 0);
+        if (typeof user.quota === 'number' && unit > 0) {
+            return '$' + (user.quota / unit).toFixed(2);
+        }
+    } catch {}
     return null;
 })()
 """
@@ -1341,13 +1781,14 @@ def _probe_once(endpoint, data, headers):
     return _classify_probe_response(status, body)
 
 
-def _run_claude_probe(token, base_url, model=HEALTH_MODEL):
+def _run_claude_probe(token, base_url, model=None):
     """Send a Claude Code-shaped request to {base_url}/v1/messages.
 
     Retries transient failures (503 upstream, 429 rate-limit, network blips)
     with increasing backoff; deterministic verdicts (auth / quota / model / bad
     request) return immediately since retrying them is pointless.
     """
+    model = model or health_model_for(base_url) or HEALTH_MODEL
     endpoint = base_url.rstrip("/") + "/v1/messages?beta=true"
     payload = {
         "model": model,
@@ -1398,12 +1839,16 @@ def _wait_for_browser_close(ctx, page=None):
             break
 
 
-def open_saved_session_browser(name, url):
-    """Open a visible browser for manual inspection using the saved session."""
-    if not has_session(name):
-        raise ValueError("未保存会话")
+def open_saved_session_browser(name, url, profile_dir=None):
+    """Open a visible browser for manual inspection using the saved session.
 
-    profile_dir = get_profile_dir(name)
+    `profile_dir` lets the AgentRouter tab reuse this against its own profile
+    root instead of the AnyRouter one.
+    """
+    if profile_dir is None:
+        if not has_session(name):
+            raise ValueError("未保存会话")
+        profile_dir = get_profile_dir(name)
     console_url = url.rstrip("/") + "/console"
     opened_url = console_url
     balance = None
@@ -1440,12 +1885,14 @@ def open_saved_session_browser(name, url):
 
 
 def do_checkin(name, url, headless=True, timeout=30000):
-    busy_error = get_account_busy_error(name)
+    # A batch marks accounts as queued before workers start. That state belongs
+    # to this invocation and must be allowed to advance into checking.
+    busy_error = None if get_account_state(name) == "queued" else get_account_busy_error(name)
     if busy_error:
         log.info(f"[{name}] 跳过签到 - {busy_error}")
         return
 
-    set_status(name, "checking")
+    set_status(name, "checking", "正在启动浏览器")
 
     if not has_session(name):
         set_status(name, "no_session", "未保存会话")
@@ -1464,25 +1911,42 @@ def do_checkin(name, url, headless=True, timeout=30000):
 
     profile_dir = get_profile_dir(name)
     balance = None
+    site = detect_site(url)
     try:
         with sync_playwright() as p:
             ctx = _launch_ctx(p, profile_dir, headless=headless)
-            prepare_checkin_monitor(ctx)
-            signin_state = attach_signin_capture(ctx)
-            diag_records = attach_response_recorder(ctx) if CHECKIN_DIAG_LOG else None
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-            page.wait_for_load_state("networkidle", timeout=timeout)
+            if site == SITE_AGENTROUTER:
+                set_status(name, "checking", "重新登录以触发签到")
+                result_state, message, balance = run_agentrouter_checkin(
+                    ctx, name, url, timeout_ms=timeout, prev_balance=prev_balance,
+                )
+                ctx.close()
+            else:
+                prepare_checkin_monitor(ctx)
+                signin_state = attach_signin_capture(ctx)
+                diag_records = attach_response_recorder(ctx) if CHECKIN_DIAG_LOG else None
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                set_status(name, "checking", "页面加载中")
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                # networkidle can stall behind analytics/streaming requests. A
+                # bounded settle period is enough for the sign-in request and
+                # avoids spending the full 30s timeout on a noisy page.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=min(timeout, 10000))
+                except Exception:
+                    log.info(f"[{name}] 页面仍有后台请求，继续检测签到信号")
 
-            result_state, message, balance = wait_for_checkin_result(
-                page, url, prev_balance=prev_balance,
-                signin_state=signin_state, account_name=name,
-            )
+                set_status(name, "checking", "等待签到响应")
 
-            if diag_records is not None:
-                dump_response_records(name, diag_records)
+                result_state, message, balance = wait_for_checkin_result(
+                    page, url, prev_balance=prev_balance,
+                    signin_state=signin_state, account_name=name,
+                )
 
-            ctx.close()
+                if diag_records is not None:
+                    dump_response_records(name, diag_records)
+
+                ctx.close()
 
         if result_state == "success":
             set_status(name, "success", message, balance=balance)
@@ -1493,7 +1957,9 @@ def do_checkin(name, url, headless=True, timeout=30000):
             append_history({"account": name, "time": datetime.now().isoformat(), "status": "uncertain", "message": message, "balance": balance})
             log.warning(f"[{name}] 签到待确认 - {message}")
         else:
-            set_status(name, "failed", message, balance=balance)
+            expired = "会话已过期" in (message or "") or "登录页" in (message or "")
+            state = "needs_login" if expired else "failed"
+            set_status(name, state, message, balance=balance)
             append_history({"account": name, "time": datetime.now().isoformat(), "status": "failed", "message": message, "balance": balance})
             log.warning(f"[{name}] 签到失败 - {message}")
 
@@ -1502,6 +1968,45 @@ def do_checkin(name, url, headless=True, timeout=30000):
         set_status(name, "failed", msg)
         append_history({"account": name, "time": datetime.now().isoformat(), "status": "failed", "message": msg})
         log.error(f"[{name}] 签到异常 - {msg}")
+
+
+def _checkin_worker_count(account_count, max_concurrency=CHECKIN_MAX_CONCURRENCY):
+    """Return a conservative bounded worker count for a batch."""
+    if account_count <= 0:
+        return 0
+    return max(1, min(account_count, max_concurrency))
+
+
+def run_checkin_batch(accounts, headless=True, timeout=30000):
+    """Run independent account profiles concurrently with a small hard cap."""
+    if not accounts:
+        return
+
+    for account in accounts:
+        set_status(account["name"], "queued", "排队等待签到")
+
+    workers = _checkin_worker_count(len(accounts))
+    log.info(f"批量签到并发数: {workers}")
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="checkin") as pool:
+        futures = {
+            pool.submit(
+                do_checkin,
+                account["name"],
+                account.get("url", DEFAULT_URL),
+                headless,
+                timeout,
+            ): account["name"]
+            for account in accounts
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                # do_checkin normally contains its own exception boundary; keep
+                # this guard so one unexpected worker failure cannot abort the
+                # remaining batch.
+                log.error(f"[{name}] 签到线程异常 - {str(e)[:200]}")
 
 
 def do_refresh_balance(name, url):
@@ -1590,7 +2095,7 @@ def do_login(name, url):
             ctx = _launch_ctx(p, profile_dir, headless=False)
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(url, wait_until="domcontentloaded")
-            _poll_login_then_wait_close(ctx, page, name)
+            _poll_login_then_wait_close(ctx, page, name, console_base=url)
             try:
                 ctx.close()
             except Exception:
@@ -1600,7 +2105,8 @@ def do_login(name, url):
         set_status(name, "login_failed", str(e)[:200])
 
 
-def _poll_login_then_wait_close(ctx, page, status_key):
+def _poll_login_then_wait_close(ctx, page, status_key, console_base=None,
+                                status_setter=None):
     """Single-thread polling: check login on all pages every 2s.
 
     Playwright is NOT thread-safe, so we must poll from the same thread.
@@ -1608,6 +2114,7 @@ def _poll_login_then_wait_close(ctx, page, status_key):
     Returns detected username or None.
     """
     detected_name = None
+    set_login_status = status_setter or set_status
 
     for _ in range(300):  # Max ~10 minutes
         # Sleep 2s via Playwright
@@ -1638,15 +2145,17 @@ def _poll_login_then_wait_close(ctx, page, status_key):
                 name = extract_username(pg, log_detect=True)
                 if name and name != detected_name:
                     detected_name = name
-                    set_status(status_key, "logging_in",
-                               f"已检测到用户「{name}」，可以关闭浏览器了")
+                    set_login_status(status_key, "logging_in",
+                                     f"已检测到用户「{name}」，可以关闭浏览器了")
                     log.info(f"  Login detected: {name}")
-                    # Navigate main page to /console
+                    # Navigate the account's own site to /console.
                     try:
-                        first_page = ctx.pages[0]
-                        if '/console' not in first_page.url:
-                            first_page.goto("https://anyrouter.top/console",
-                                            wait_until="domcontentloaded", timeout=15000)
+                        if console_base:
+                            first_page = ctx.pages[0]
+                            console_url = console_base.rstrip("/") + "/console"
+                            if console_url not in first_page.url:
+                                first_page.goto(console_url,
+                                                wait_until="domcontentloaded", timeout=15000)
                     except Exception:
                         pass
                     break
@@ -1682,7 +2191,7 @@ def do_login_new(url):
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(url, wait_until="domcontentloaded")
 
-            detected_name = _poll_login_then_wait_close(ctx, page, temp_id)
+            detected_name = _poll_login_then_wait_close(ctx, page, temp_id, console_base=url)
 
             # Final extraction attempt if not detected yet
             if not detected_name:
@@ -1760,6 +2269,470 @@ def do_login_new(url):
     log.info(f"New account added: {final_name}")
 
 
+# ── AgentRouter (separate tab) ─────────────────────────────
+# AgentRouter reuses the browser launcher and low-level helpers, but keeps its
+# own account file, profiles, in-memory status and history so the AnyRouter tab
+# is untouched. Its daily check-in is awarded inside a successful login, so an
+# automated run logs out (clearing the httpOnly session cookie) and replays the
+# LinuxDO OAuth login, then confirms the award from the site's system log.
+
+AR_DEFAULT_URL = "https://agentrouter.org"
+AR_CONFIG_FILE = BASE_DIR / "config" / "agentrouter_accounts.json"
+AR_PROFILES_DIR = PROFILES_DIR / "agentrouter"
+AR_HISTORY_FILE = BASE_DIR / "data" / "agentrouter_history.json"
+
+_ar_lock = threading.RLock()
+_ar_status = {}
+_ar_health = {}
+_ar_busy = False
+_ar_refreshing = False
+_ar_health_busy = False
+
+
+def ar_load_config():
+    with _io_lock:
+        if not AR_CONFIG_FILE.exists():
+            return {"accounts": []}
+        try:
+            with open(AR_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {"accounts": []}
+            data.setdefault("accounts", [])
+            return data
+        except Exception as e:
+            log.warning(f"AgentRouter 配置损坏，按空配置处理: {e}")
+            return {"accounts": []}
+
+
+def ar_save_config(config):
+    with _io_lock:
+        AR_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(AR_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def ar_get_profile_dir(name):
+    if not _safe_name(name):
+        raise ValueError("Invalid account name")
+    d = AR_PROFILES_DIR / name
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
+def ar_has_session(name):
+    if not _safe_name(name):
+        return False
+    d = AR_PROFILES_DIR / name
+    return d.exists() and any(d.iterdir())
+
+
+def ar_load_history():
+    with _io_lock:
+        if not AR_HISTORY_FILE.exists():
+            return []
+        try:
+            with open(AR_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f).get("history", [])
+        except Exception as e:
+            log.warning(f"AgentRouter 历史文件损坏，按空历史处理: {e}")
+            return []
+
+
+def ar_append_history(entry):
+    with _io_lock:
+        AR_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        history = ar_load_history()
+        history.insert(0, entry)
+        history = history[:500]
+        with open(AR_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({"history": history}, f, indent=2, ensure_ascii=False)
+
+
+def ar_checked_today(name):
+    today_str = date.today().isoformat()
+    return any(
+        e.get("account") == name
+        and (e.get("time") or "")[:10] == today_str
+        and e.get("status") == "success"
+        for e in ar_load_history()
+    )
+
+
+def ar_set_status(name, state, message="", balance=None):
+    with _ar_lock:
+        entry = {"state": state, "message": message, "time": datetime.now().isoformat()}
+        if balance is not None:
+            entry["balance"] = balance
+        elif name in _ar_status and "balance" in _ar_status[name]:
+            entry["balance"] = _ar_status[name]["balance"]
+        _ar_status[name] = entry
+
+
+def ar_set_health(name, state, message="", category=None):
+    with _ar_lock:
+        _ar_health[name] = {
+            "state": state,
+            "message": message,
+            "category": category,
+            "time": datetime.now().isoformat(),
+        }
+
+
+def ar_try_claim_health(name):
+    with _ar_lock:
+        h = _ar_health.get(name)
+        if h and h.get("state") == "checking":
+            return False
+        _ar_health[name] = {
+            "state": "checking",
+            "message": "检测中",
+            "category": None,
+            "time": datetime.now().isoformat(),
+        }
+        return True
+
+
+def ar_get_account_state(name):
+    with _ar_lock:
+        return (_ar_status.get(name) or {}).get("state")
+
+
+def ar_get_busy_error(name):
+    state = ar_get_account_state(name)
+    if state == "queued":
+        return "该账号已在签到队列中"
+    if state == "checking":
+        return "该账号正在签到"
+    if state == "logging_in":
+        return "该账号正在登录，请先关闭浏览器"
+    if state == "refreshing":
+        return "该账号正在刷新余额"
+    if state == "inspecting":
+        return "该账号浏览器已打开，请先关闭窗口"
+    return None
+
+
+def ar_do_checkin(name):
+    """Re-login to trigger agentrouter's daily check-in."""
+    busy = None if ar_get_account_state(name) == "queued" else ar_get_busy_error(name)
+    if busy:
+        log.info(f"[AR:{name}] 跳过签到 - {busy}")
+        return
+
+    ar_set_status(name, "checking", "正在启动浏览器")
+    if not ar_has_session(name):
+        ar_set_status(name, "no_session", "未保存会话")
+        ar_append_history({"account": name, "time": datetime.now().isoformat(),
+                           "status": "skipped", "message": "未保存会话"})
+        return
+
+    config = load_config()
+    headless = config.get("headless", True)
+    timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
+
+    prev_balance = None
+    with _ar_lock:
+        prev_balance = (_ar_status.get(name) or {}).get("balance")
+    if not prev_balance:
+        for entry in ar_load_history():
+            if entry.get("account") == name and entry.get("balance"):
+                prev_balance = entry.get("balance")
+                break
+
+    balance = None
+    try:
+        with sync_playwright() as p:
+            # headless Cloudflare on connect.linux.do rejects the default
+            # "HeadlessChrome" UA; a regular Chrome UA gets through.
+            ua = AGENTROUTER_HEADLESS_UA if headless else None
+            ctx = _launch_ctx(p, ar_get_profile_dir(name), headless=headless,
+                              user_agent=ua)
+            ar_set_status(name, "checking", "重新登录以触发签到")
+            result_state, message, balance = run_agentrouter_checkin(
+                ctx, name, AR_DEFAULT_URL, timeout_ms=timeout,
+                prev_balance=prev_balance, checked_today_fn=ar_checked_today,
+            )
+            ctx.close()
+
+        if result_state == "success":
+            ar_set_status(name, "success", message, balance=balance)
+            ar_append_history({"account": name, "time": datetime.now().isoformat(),
+                               "status": "success", "message": message, "balance": balance})
+            log.info(f"[AR:{name}] 签到成功 - {message}")
+        elif result_state == "uncertain":
+            ar_set_status(name, "uncertain", message, balance=balance)
+            ar_append_history({"account": name, "time": datetime.now().isoformat(),
+                               "status": "uncertain", "message": message, "balance": balance})
+            log.warning(f"[AR:{name}] 签到待确认 - {message}")
+        else:
+            expired = "已过期" in (message or "") or "登录页" in (message or "")
+            state = "needs_login" if expired else "failed"
+            ar_set_status(name, state, message, balance=balance)
+            ar_append_history({"account": name, "time": datetime.now().isoformat(),
+                               "status": "failed", "message": message, "balance": balance})
+            log.warning(f"[AR:{name}] 签到失败 - {message}")
+    except Exception as e:
+        msg = str(e)[:200]
+        ar_set_status(name, "failed", msg)
+        ar_append_history({"account": name, "time": datetime.now().isoformat(),
+                           "status": "failed", "message": msg})
+        log.error(f"[AR:{name}] 签到异常 - {msg}")
+
+
+def ar_run_checkin_batch(accounts):
+    if not accounts:
+        return
+    for account in accounts:
+        ar_set_status(account["name"], "queued", "排队等待签到")
+    workers = _checkin_worker_count(len(accounts))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ar-checkin") as pool:
+        futures = {pool.submit(ar_do_checkin, a["name"]): a["name"] for a in accounts}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                log.error(f"[AR:{name}] 签到线程异常 - {str(e)[:200]}")
+
+
+def ar_do_refresh_balance(name):
+    if ar_get_account_state(name) in ACTIVE_ACCOUNT_STATES:
+        return
+    if not ar_has_session(name):
+        return
+
+    ar_set_status(name, "refreshing")
+    try:
+        with sync_playwright() as p:
+            ctx = _launch_ctx(p, ar_get_profile_dir(name), headless=True)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(AR_DEFAULT_URL + "/console", wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
+            balance = extract_balance(page)
+            ctx.close()
+
+        ar_set_status(name, "idle", balance=balance)
+        if balance:
+            log.info(f"[AR:{name}] 余额刷新: {balance}")
+        else:
+            log.warning(f"[AR:{name}] 未能获取余额")
+    except Exception as e:
+        msg = str(e)[:200]
+        ar_set_status(name, "idle", message=msg)
+        log.error(f"[AR:{name}] 余额刷新异常 - {msg}")
+
+
+def ar_do_check_health(name, token):
+    if not token:
+        ar_set_health(name, "failed", "未设置 API 令牌", category="no_token")
+        return
+    try:
+        result = _run_claude_probe(token, AR_DEFAULT_URL)
+    except Exception as e:
+        result = {"ok": False, "category": "network", "message": f"请求异常: {str(e)[:120]}"}
+    ar_set_health(name, "ok" if result.get("ok") else "failed",
+                  result.get("message", ""), category=result.get("category"))
+    if result.get("ok"):
+        log.info(f"[AR:{name}] 可用性检测通过 - {result.get('message', '')}")
+    else:
+        log.warning(f"[AR:{name}] 可用性检测失败 - {result.get('message', '')}")
+
+
+def ar_do_open_browser(name):
+    if not ar_has_session(name):
+        ar_set_status(name, "no_session", "未保存会话")
+        return
+    ar_set_status(name, "inspecting", "浏览器已打开")
+    try:
+        result = open_saved_session_browser(
+            name, AR_DEFAULT_URL, profile_dir=ar_get_profile_dir(name))
+        ar_set_status(name, "idle", balance=result.get("balance"))
+    except Exception as e:
+        ar_set_status(name, "inspect_failed", str(e)[:200])
+
+
+def ar_do_login(name):
+    """Re-login an existing agentrouter account."""
+    ar_set_status(name, "logging_in", "浏览器已打开，请登录后关闭窗口")
+    try:
+        with sync_playwright() as p:
+            ctx = _launch_ctx(p, ar_get_profile_dir(name), headless=False)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(AR_DEFAULT_URL, wait_until="domcontentloaded")
+            _poll_login_then_wait_close(
+                ctx, page, name, console_base=AR_DEFAULT_URL,
+                status_setter=ar_set_status,
+            )
+            ctx.close()
+        ar_set_status(name, "logged_in", "会话已保存")
+    except Exception as e:
+        ar_set_status(name, "login_failed", str(e)[:200])
+
+
+AR_IMPORT_IGNORE = {
+    # Chrome lock files must not be copied into a profile that is about to open.
+    "SingletonLock", "SingletonCookie", "SingletonSocket",
+    # Pure caches: skipping them cuts a ~300MB profile down to ~60MB.
+    "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
+    "component_crx_cache", "extensions_crx_cache", "BrowserMetrics",
+    "GrShaderCache", "ShaderCache",
+}
+
+
+def _ignore_profile_cache(directory, names):
+    return {n for n in names if n in AR_IMPORT_IGNORE}
+
+
+def ar_do_import(any_name):
+    """Copy an AnyRouter profile into the AgentRouter store.
+
+    The copied Chrome profile carries the LinuxDO cookies, so after opening
+    agentrouter the user only needs to click "使用 LinuxDO 继续" once — no
+    password. If the AnyRouter profile already visited agentrouter, the copied
+    session cookie logs straight in.
+    """
+    if not _safe_name(any_name):
+        ar_set_status(any_name, "login_failed", "账号名包含非法字符")
+        return
+    if not has_session(any_name):
+        ar_set_status(any_name, "login_failed", "该 AnyRouter 账号未保存会话")
+        return
+    busy = get_account_busy_error(any_name)
+    if busy:
+        ar_set_status(any_name, "login_failed", f"AnyRouter 账号{ busy }")
+        return
+
+    ar_set_status(any_name, "logging_in", "正在复制登录环境")
+    src = PROFILES_DIR / any_name
+    dst = AR_PROFILES_DIR / any_name
+    try:
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst, ignore=_ignore_profile_cache)
+    except Exception as e:
+        ar_set_status(any_name, "login_failed", f"复制环境失败: {str(e)[:150]}")
+        log.error(f"[AR:{any_name}] 复制 profile 失败 - {e}")
+        return
+
+    detected = None
+    try:
+        with sync_playwright() as p:
+            ctx = _launch_ctx(p, str(dst), headless=False)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(AR_DEFAULT_URL + "/login", wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2500)
+            detected = extract_username(page, log_detect=True)
+
+            if detected:
+                ar_set_status(any_name, "logging_in",
+                              f"已检测到「{detected}」，正在保存会话")
+                page.wait_for_timeout(1200)
+            else:
+                ar_set_status(any_name, "logging_in", "正在使用 LinuxDO 自动登录")
+                detected = _agentrouter_oauth_login(ctx, page)
+            try:
+                ctx.close()
+            except Exception:
+                pass
+    except Exception as e:
+        ar_set_status(any_name, "login_failed", str(e)[:200])
+        log.error(f"[AR:{any_name}] 导入登录失败 - {e}")
+        return
+
+    if not detected:
+        ar_set_status(any_name, "login_failed", "未完成登录，已取消导入")
+        shutil.rmtree(dst, ignore_errors=True)
+        return
+
+    final_name = any_name
+    if detected != any_name:
+        # The site's display name wins when it is usable; keep the directory,
+        # status and config entry under the same name.
+        target = AR_PROFILES_DIR / detected
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            dst.rename(target)
+            final_name = detected
+        except Exception as e:
+            log.warning(f"[AR:{any_name}] 无法按站点用户名重命名 profile: {e}")
+
+    config = ar_load_config()
+    entry = next((a for a in config["accounts"] if a.get("name") == final_name), None)
+    if entry is None:
+        config["accounts"].append({"name": final_name, "url": AR_DEFAULT_URL})
+        ar_save_config(config)
+    with _ar_lock:
+        _ar_status.pop(any_name, None)
+    ar_set_status(final_name, "logged_in", "会话已保存")
+    log.info(f"AgentRouter account imported from AnyRouter: {any_name} -> {final_name}")
+
+
+def ar_do_login_new():
+    """Open a fresh agentrouter login and auto-detect the account name."""
+    temp_id = f"_temp_{uuid.uuid4().hex[:8]}"
+    ar_set_status(temp_id, "logging_in", "浏览器已打开，请登录后关闭窗口")
+    profile_dir = AR_PROFILES_DIR / temp_id
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    detected = None
+
+    try:
+        with sync_playwright() as p:
+            ctx = _launch_ctx(p, str(profile_dir), headless=False)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(AR_DEFAULT_URL, wait_until="domcontentloaded")
+            detected = _poll_login_then_wait_close(
+                ctx, page, temp_id, console_base=AR_DEFAULT_URL,
+                status_setter=ar_set_status,
+            )
+            if not detected:
+                for pg in ctx.pages:
+                    try:
+                        detected = extract_username(pg, log_detect=True)
+                        if detected:
+                            break
+                    except Exception:
+                        pass
+            try:
+                ctx.close()
+            except Exception:
+                pass
+    except Exception as e:
+        log.error(f"AgentRouter login error: {e}")
+        ar_set_status(temp_id, "login_failed", str(e)[:200])
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        return
+
+    if not detected:
+        ar_set_status(temp_id, "login_failed", "无法识别用户名，请手动添加")
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        return
+
+    final_dir = AR_PROFILES_DIR / detected
+    try:
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        profile_dir.rename(final_dir)
+    except Exception:
+        shutil.copytree(str(profile_dir), str(final_dir), dirs_exist_ok=True)
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+    config = ar_load_config()
+    if not any(a.get("name") == detected for a in config["accounts"]):
+        config["accounts"].append({"name": detected, "url": AR_DEFAULT_URL})
+        ar_save_config(config)
+
+    with _ar_lock:
+        _ar_status.pop(temp_id, None)
+    ar_set_status(detected, "logged_in", "会话已保存")
+    log.info(f"AgentRouter account added/updated: {detected}")
+
+
 # ── Notifications ──────────────────────────────────────────
 # One URL, three shapes: Bark (api.day.app) and Server酱 (ftqq.com) get their
 # native payloads; anything else gets a generic JSON POST {title, body}.
@@ -1778,7 +2751,7 @@ def send_notification(title, body):
     try:
         host = urllib.parse.urlparse(url).hostname or ""
         if "day.app" in host:  # Bark
-            payload = json.dumps({"title": title, "body": body, "group": "anyrouter"}).encode()
+            payload = json.dumps({"title": title, "body": body, "group": "auto-checkin"}).encode()
             req = urllib.request.Request(
                 url, data=payload, method="POST",
                 headers={"content-type": "application/json; charset=utf-8"},
@@ -1863,20 +2836,26 @@ def compute_next_run(now, time_str, jitter_minutes, catch_up=False):
     return base + timedelta(seconds=random.randint(0, max(0, jitter_minutes) * 60))
 
 
-def _summarize_batch(names):
+def _summarize_batch(names, ar_names=None):
     """Build a per-account result summary from the freshest status entries."""
+    ar_names = ar_names or []
     with _lock:
         snap = {n: dict(_account_status.get(n) or {}) for n in names}
+    with _ar_lock:
+        ar_snap = {n: dict(_ar_status.get(n) or {}) for n in ar_names}
     lines = []
     counts = {"success": 0, "failed": 0, "uncertain": 0, "other": 0}
-    for n in names:
-        s = snap.get(n, {})
+    items = [(n, snap.get(n, {}), None) for n in names]
+    items += [(n, ar_snap.get(n, {}), "AR") for n in ar_names]
+    for n, s, tag in items:
         state = s.get("state", "unknown")
         counts[state if state in counts else "other"] += 1
         icon = {"success": "✅", "failed": "❌", "uncertain": "⚠️"}.get(state, "•")
         msg = (s.get("message") or state)[:80]
-        lines.append(f"{icon} {n}: {msg}")
-    title = f"签到完成: 成功 {counts['success']}/{len(names)}"
+        prefix = f"[{tag}] " if tag else ""
+        lines.append(f"{icon} {prefix}{n}: {msg}")
+    total = len(names) + len(ar_names)
+    title = f"签到完成: 成功 {counts['success']}/{total}"
     if counts["failed"]:
         title += f"，失败 {counts['failed']}"
     if counts["uncertain"]:
@@ -1905,18 +2884,39 @@ def run_scheduled_checkin():
             if has_session(a["name"]) and a["name"] not in busy_names
             and not checked_today(a["name"])
         ]
-        if not accounts:
+
+        ar_config = ar_load_config()
+        with _ar_lock:
+            if _ar_busy:
+                ar_accounts = []
+                log.info("AgentRouter 定时签到: 已有批量任务在运行，本次跳过")
+            else:
+                ar_busy_names = {
+                    n for n, s in _ar_status.items()
+                    if s.get("state") in ACTIVE_ACCOUNT_STATES
+                }
+                ar_accounts = [
+                    a for a in ar_config["accounts"]
+                    if ar_has_session(a["name"]) and a["name"] not in ar_busy_names
+                    and not ar_checked_today(a["name"])
+                ]
+
+        if not accounts and not ar_accounts:
             log.info("定时签到: 所有账号今日均已签到，无需运行")
             return
         headless = config.get("headless", True)
         timeout = config.get("timeout", DEFAULT_TIMEOUT) * 1000
         names = [a["name"] for a in accounts]
-        log.info(f"定时签到开始，共 {len(names)} 个账号: {', '.join(names)}")
-        for a in accounts:
-            do_checkin(a["name"], a.get("url", DEFAULT_URL), headless, timeout)
-        title, body = _summarize_batch(names)
+        ar_names = [a["name"] for a in ar_accounts]
+        if names:
+            log.info(f"定时签到开始，共 {len(names)} 个账号: {', '.join(names)}")
+            run_checkin_batch(accounts, headless, timeout)
+        if ar_names:
+            log.info(f"AgentRouter 定时签到开始，共 {len(ar_names)} 个账号: {', '.join(ar_names)}")
+            ar_run_checkin_batch(ar_accounts)
+        title, body = _summarize_batch(names, ar_names)
         log.info(f"定时签到结束 - {title}")
-        ok, err = send_notification(f"AnyRouter {title}", body)
+        ok, err = send_notification(f"签到 {title}", body)
         if not ok and err != "未配置通知 URL":
             log.warning(f"通知发送失败: {err}")
     finally:
@@ -2053,6 +3053,7 @@ def get_accounts():
         result.append({
             "name": n,
             "url": a.get("url", DEFAULT_URL),
+            "site": detect_site(a.get("url", DEFAULT_URL)),
             "note": a.get("note", ""),
             "hasSession": has_session(n),
             "hasToken": bool(a.get("token")),
@@ -2253,8 +3254,7 @@ def checkin_all():
     def run():
         global _busy
         try:
-            for a in accounts:
-                do_checkin(a["name"], a.get("url", DEFAULT_URL), headless, timeout)
+            run_checkin_batch(accounts, headless, timeout)
         finally:
             with _lock:
                 _busy = False
@@ -2472,7 +3472,7 @@ def put_settings():
 @app.route("/api/notify/test", methods=["POST"])
 @require_auth
 def notify_test():
-    ok, err = send_notification("AnyRouter 测试通知", "通知配置成功，签到结果将推送到这里。")
+    ok, err = send_notification("签到助手测试通知", "通知配置成功，签到结果将推送到这里。")
     if ok:
         return jsonify({"ok": True})
     return jsonify({"error": f"发送失败: {err}"}), 400
@@ -2484,6 +3484,434 @@ def get_history():
     return jsonify(load_history()[:100])
 
 
+# ── AgentRouter routes ─────────────────────────────────────
+# Mirrors the AnyRouter endpoints under /api/ar/*, backed by the separate
+# account file, profiles, status and history defined above.
+
+def _ar_account_or_error(name, require_session=True):
+    if not _safe_name(name):
+        return None, (jsonify({"error": "账号名包含非法字符"}), 400)
+    config = ar_load_config()
+    acc = next((a for a in config["accounts"] if a.get("name") == name), None)
+    if not acc:
+        return None, (jsonify({"error": "Not found"}), 404)
+    if require_session and not ar_has_session(name):
+        return None, (jsonify({"error": "未保存会话，请先登录"}), 400)
+    return acc, None
+
+
+@app.route("/api/ar/accounts")
+@require_auth
+def ar_get_accounts():
+    config = ar_load_config()
+    history = ar_load_history()
+
+    last_map = {}
+    for entry in history:
+        n = entry.get("account")
+        if n and n not in last_map:
+            last_map[n] = entry
+
+    with _ar_lock:
+        status_snap = {k: dict(v) for k, v in _ar_status.items()}
+        health_snap = {k: dict(v) for k, v in _ar_health.items()}
+
+    result = []
+    for a in config["accounts"]:
+        n = a["name"]
+        s = status_snap.get(n, {})
+        last = last_map.get(n)
+        result.append({
+            "name": n,
+            "url": a.get("url", AR_DEFAULT_URL),
+            "site": SITE_AGENTROUTER,
+            "note": a.get("note", ""),
+            "hasSession": ar_has_session(n),
+            "hasToken": bool(a.get("token")),
+            "tokenMask": _mask_token(a.get("token")),
+            "health": health_snap.get(n),
+            "state": s.get("state", "idle"),
+            "message": s.get("message", ""),
+            "balance": s.get("balance") or (last.get("balance") if last else None),
+            "checkedToday": ar_checked_today(n),
+            "lastCheckin": last["time"] if last else None,
+            "lastStatus": last["status"] if last else None,
+        })
+    return jsonify(result)
+
+
+@app.route("/api/ar/accounts", methods=["POST"])
+@require_auth
+def ar_add_account():
+    data = request.json or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Name required"}), 400
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
+    config = ar_load_config()
+    if any(a["name"] == name for a in config["accounts"]):
+        return jsonify({"error": "Already exists"}), 409
+    config["accounts"].append({"name": name, "url": data.get("url", AR_DEFAULT_URL)})
+    ar_save_config(config)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/accounts/<name>", methods=["DELETE"])
+@require_auth
+def ar_remove_account(name):
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
+    config = ar_load_config()
+    config["accounts"] = [a for a in config["accounts"] if a["name"] != name]
+    ar_save_config(config)
+    d = AR_PROFILES_DIR / name
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+    with _ar_lock:
+        _ar_status.pop(name, None)
+        _ar_health.pop(name, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/accounts/<name>", methods=["PATCH"])
+@require_auth
+def ar_patch_account(name):
+    """Rename / update note / update token, using AgentRouter's own storage."""
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
+    busy = ar_get_busy_error(name)
+    if busy:
+        return jsonify({"error": busy}), 409
+
+    data = request.json or {}
+    new_name_raw = data.get("name")
+    new_name = new_name_raw.strip() if isinstance(new_name_raw, str) else None
+    new_note = data.get("note")
+    if new_note is not None:
+        new_note = str(new_note).strip()[:200]
+
+    config = ar_load_config()
+    idx = next((i for i, a in enumerate(config["accounts"]) if a["name"] == name), -1)
+    if idx < 0:
+        return jsonify({"error": "Not found"}), 404
+
+    current = name
+    if new_name and new_name != name:
+        if not _safe_name(new_name):
+            return jsonify({"error": "新账号名包含非法字符"}), 400
+        if any(a["name"] == new_name for a in config["accounts"]):
+            return jsonify({"error": "新账号名已存在"}), 409
+        src = AR_PROFILES_DIR / name
+        dst = AR_PROFILES_DIR / new_name
+        if dst.exists():
+            return jsonify({"error": "目标会话目录已存在，请先移除"}), 409
+        if src.exists():
+            src.rename(dst)
+        config["accounts"][idx]["name"] = new_name
+        with _ar_lock:
+            if name in _ar_status:
+                _ar_status[new_name] = _ar_status.pop(name)
+            if name in _ar_health:
+                _ar_health[new_name] = _ar_health.pop(name)
+        current = new_name
+
+    if new_note is not None:
+        entry = config["accounts"][idx]
+        if new_note:
+            entry["note"] = new_note
+        else:
+            entry.pop("note", None)
+
+    if "token" in data:
+        new_token = data.get("token")
+        if isinstance(new_token, str) and new_token.strip():
+            config["accounts"][idx]["token"] = new_token.strip()
+        else:
+            config["accounts"][idx].pop("token", None)
+            with _ar_lock:
+                _ar_health.pop(current, None)
+                _ar_health.pop(name, None)
+
+    ar_save_config(config)
+    return jsonify({"ok": True, "name": current})
+
+
+@app.route("/api/ar/importable")
+@require_auth
+def ar_importable():
+    """AnyRouter accounts whose saved profile can be copied into AgentRouter."""
+    config = load_config()
+    ar_names = {a["name"] for a in ar_load_config()["accounts"]}
+    with _lock:
+        busy_names = {
+            n for n, s in _account_status.items()
+            if s.get("state") in ACTIVE_ACCOUNT_STATES
+        }
+    result = []
+    for a in config["accounts"]:
+        n = a["name"]
+        if not has_session(n):
+            continue
+        result.append({
+            "name": n,
+            "note": a.get("note", ""),
+            "busy": n in busy_names,
+            "imported": n in ar_names,
+        })
+    return jsonify(result)
+
+
+@app.route("/api/ar/import", methods=["POST"])
+@require_auth
+def ar_import():
+    name = ((request.json or {}).get("name") or "").strip()
+    if not _safe_name(name):
+        return jsonify({"error": "账号名包含非法字符"}), 400
+    if not has_session(name):
+        return jsonify({"error": "该 AnyRouter 账号未保存会话"}), 400
+    busy = get_account_busy_error(name)
+    if busy:
+        return jsonify({"error": busy}), 409
+    with _ar_lock:
+        for s in _ar_status.values():
+            if s.get("state") == "logging_in":
+                return jsonify({"error": "另一个登录正在进行中，请先关闭浏览器"}), 409
+    threading.Thread(target=ar_do_import, args=(name,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/login-new", methods=["POST"])
+@require_auth
+def ar_login_new():
+    with _ar_lock:
+        for s in _ar_status.values():
+            if s.get("state") == "logging_in":
+                return jsonify({"error": "另一个登录正在进行中，请先关闭浏览器"}), 409
+    threading.Thread(target=ar_do_login_new, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/login/<name>", methods=["POST"])
+@require_auth
+def ar_login_account(name):
+    acc, err = _ar_account_or_error(name, require_session=False)
+    if err:
+        return err
+    threading.Thread(target=ar_do_login, args=(name,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/open-browser/<name>", methods=["POST"])
+@require_auth
+def ar_open_browser_account(name):
+    acc, err = _ar_account_or_error(name)
+    if err:
+        return err
+    threading.Thread(target=ar_do_open_browser, args=(name,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/checkin", methods=["POST"])
+@require_auth
+def ar_checkin_all():
+    global _ar_busy
+    with _ar_lock:
+        if _ar_busy:
+            return jsonify({"error": "Already running"}), 409
+        _ar_busy = True
+    try:
+        config = ar_load_config()
+        with _ar_lock:
+            busy_names = {
+                n for n, s in _ar_status.items()
+                if s.get("state") in ACTIVE_ACCOUNT_STATES
+            }
+        acc_map = {
+            a["name"]: a for a in config["accounts"]
+            if ar_has_session(a["name"]) and a["name"] not in busy_names
+        }
+        if not acc_map:
+            with _ar_lock:
+                _ar_busy = False
+            return jsonify({"error": "没有可签到的账号（请先登录或关闭正在使用的浏览器）"}), 400
+
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            accounts = [acc_map[n] for n in order if n in acc_map]
+            seen = {a["name"] for a in accounts}
+            accounts += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            accounts = list(acc_map.values())
+    except Exception:
+        with _ar_lock:
+            _ar_busy = False
+        raise
+
+    def run():
+        global _ar_busy
+        try:
+            ar_run_checkin_batch(accounts)
+        finally:
+            with _ar_lock:
+                _ar_busy = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "count": len(accounts)})
+
+
+@app.route("/api/ar/checkin/<name>", methods=["POST"])
+@require_auth
+def ar_checkin_one(name):
+    acc, err = _ar_account_or_error(name)
+    if err:
+        return err
+    if ar_get_busy_error(name):
+        return jsonify({"error": ar_get_busy_error(name)}), 409
+    threading.Thread(target=ar_do_checkin, args=(name,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/refresh-balance", methods=["POST"])
+@require_auth
+def ar_refresh_balance_all():
+    global _ar_refreshing
+    with _ar_lock:
+        if _ar_refreshing:
+            return jsonify({"error": "Already refreshing"}), 409
+        _ar_refreshing = True
+    try:
+        config = ar_load_config()
+        with _ar_lock:
+            busy_names = {
+                n for n, s in _ar_status.items()
+                if s.get("state") in ACTIVE_ACCOUNT_STATES
+            }
+        acc_map = {
+            a["name"]: a for a in config["accounts"]
+            if ar_has_session(a["name"]) and a["name"] not in busy_names
+        }
+        if not acc_map:
+            with _ar_lock:
+                _ar_refreshing = False
+            return jsonify({"error": "没有可刷新的账号（请先登录或关闭正在使用的浏览器）"}), 400
+
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            ordered = [acc_map[n] for n in order if n in acc_map]
+            seen = {a["name"] for a in ordered}
+            ordered += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            ordered = list(acc_map.values())
+    except Exception:
+        with _ar_lock:
+            _ar_refreshing = False
+        raise
+
+    def run():
+        global _ar_refreshing
+        try:
+            for a in ordered:
+                ar_do_refresh_balance(a["name"])
+        finally:
+            with _ar_lock:
+                _ar_refreshing = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "count": len(ordered)})
+
+
+@app.route("/api/ar/refresh-balance/<name>", methods=["POST"])
+@require_auth
+def ar_refresh_balance_one(name):
+    acc, err = _ar_account_or_error(name)
+    if err:
+        return err
+    threading.Thread(target=ar_do_refresh_balance, args=(name,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+def _ar_health_account_or_error(name):
+    if not _safe_name(name):
+        return None, (jsonify({"error": "账号名包含非法字符"}), 400)
+    config = ar_load_config()
+    acc = next((a for a in config["accounts"] if a.get("name") == name), None)
+    if not acc:
+        return None, (jsonify({"error": "Not found"}), 404)
+    if not acc.get("token"):
+        return None, (jsonify({"error": "请先为该账号填写 API 令牌"}), 400)
+    return acc, None
+
+
+@app.route("/api/ar/check-health/<name>", methods=["POST"])
+@require_auth
+def ar_check_health_one(name):
+    acc, err = _ar_health_account_or_error(name)
+    if err:
+        return err
+    if not ar_try_claim_health(name):
+        return jsonify({"error": "该账号正在检测中"}), 409
+    threading.Thread(
+        target=ar_do_check_health, args=(name, acc.get("token")), daemon=True,
+    ).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/ar/check-health", methods=["POST"])
+@require_auth
+def ar_check_health_all():
+    global _ar_health_busy
+    with _ar_lock:
+        if _ar_health_busy:
+            return jsonify({"error": "Already running"}), 409
+        _ar_health_busy = True
+    try:
+        config = ar_load_config()
+        acc_map = {a["name"]: a for a in config["accounts"] if a.get("token")}
+        if not acc_map:
+            with _ar_lock:
+                _ar_health_busy = False
+            return jsonify({"error": "没有已填写 API 令牌的账号"}), 400
+
+        data = request.get_json(silent=True) or {}
+        order = data.get("order")
+        if order and isinstance(order, list):
+            accounts = [acc_map[n] for n in order if n in acc_map]
+            seen = {a["name"] for a in accounts}
+            accounts += [a for a in acc_map.values() if a["name"] not in seen]
+        else:
+            accounts = list(acc_map.values())
+        accounts = [a for a in accounts if ar_try_claim_health(a["name"])]
+        if not accounts:
+            with _ar_lock:
+                _ar_health_busy = False
+            return jsonify({"error": "所有账号都在检测中"}), 409
+    except Exception:
+        with _ar_lock:
+            _ar_health_busy = False
+        raise
+
+    def run():
+        global _ar_health_busy
+        try:
+            for a in accounts:
+                ar_do_check_health(a["name"], a.get("token"))
+        finally:
+            with _ar_lock:
+                _ar_health_busy = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "count": len(accounts)})
+
+
+@app.route("/api/ar/history")
+@require_auth
+def ar_get_history():
+    return jsonify(ar_load_history()[:100])
+
+
 if __name__ == "__main__":
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "data").mkdir(parents=True, exist_ok=True)
@@ -2492,6 +3920,6 @@ if __name__ == "__main__":
     _config = load_config()
     _host = _config.get("host", "127.0.0.1")
     _port = int(_config.get("port", 8686))
-    print("\n  AnyRouter 签到助手")
+    print("\n  Router 签到助手")
     print(f"  http://{'localhost' if _host in ('127.0.0.1', '0.0.0.0') else _host}:{_port}\n")
     app.run(host=_host, port=_port, debug=False)

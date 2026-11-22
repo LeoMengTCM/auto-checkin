@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **AgentRouter 标签页**：新增 agentrouter.org 的独立管理页，支持添加/登录账号、签到、刷新余额、可用性检测、编辑备注与令牌、查看签到历史
+- AgentRouter 使用独立的 `config/agentrouter_accounts.json`、`data/profiles/agentrouter/` 和 `data/agentrouter_history.json`，与 AnyRouter 的账号与会话互不影响
+- 定时签到与通知同时覆盖两个站点，通知摘要里用 `[AR]` 前缀区分 AgentRouter 账号
+- AgentRouter 标签页添加账号支持「从 AnyRouter 账号复制登录环境」：复制浏览器 profile（LinuxDO 会话一并带过去），复用已登录的 LinuxDo 身份，无需重新输入账号密码
+
+### Changed
+- AgentRouter 的签到按站点的真实机制实现：清除 agentrouter 的 httpOnly 登录 cookie → 重放 LinuxDO OAuth 登录 → 读取 `/api/log/self` 系统日志确认「每日签到成功」。已实测普通访问不会触发签到；登出重登才会发放当日额度
+- headless 访问 connect.linux.do 时使用普通 Chrome UA，避免 Cloudflare 因 `HeadlessChrome` 标识拦截；OAuth 状态接口 429 时直接报错而不是重试加剧限流
+
 ## [1.2.0] - 2026-07-10
 
 ### Added

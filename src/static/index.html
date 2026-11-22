@@ -2,764 +2,711 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>AnyRouter 签到助手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  /* Set theme before first paint to avoid a flash */
+  (function () {
+    try {
+      var t = localStorage.getItem('theme');
+      if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.dataset.theme = t;
+    } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+  })();
+</script>
 <style>
+/* ── Design Tokens ─────────────────────────────────────── */
 :root {
-  --bg: #FAF9F7;
-  --bg-surface: #FFFFFF;
-  --bg-hover: rgba(0, 0, 0, 0.025);
-  --bg-active: rgba(0, 0, 0, 0.045);
-  --text: #1A1A1A;
-  --text-2: #6B6560;
-  --text-3: #9B9590;
-  --sep: rgba(0, 0, 0, 0.06);
-  --fill: rgba(0, 0, 0, 0.03);
-  --accent: #C2703B;
-  --accent-hover: #A85E30;
-  --accent-tint: rgba(194, 112, 59, 0.08);
-  --green: #5E8C61;
-  --green-tint: rgba(94, 140, 97, 0.08);
-  --red: #C45B4A;
-  --red-tint: rgba(196, 91, 74, 0.06);
-  --orange: #D97706;
-  --orange-tint: rgba(217, 119, 6, 0.08);
-  --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02);
-  --shadow-lg: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.03);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --topbar-h: 52px;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1A1915;
-    --bg-surface: #252420;
-    --bg-hover: rgba(255, 255, 255, 0.04);
-    --bg-active: rgba(255, 255, 255, 0.07);
-    --text: #E8E4DF;
-    --text-2: #9B9590;
-    --text-3: #6B6560;
-    --sep: rgba(255, 255, 255, 0.07);
-    --fill: rgba(255, 255, 255, 0.04);
-    --accent: #D4885A;
-    --accent-hover: #E09A6C;
-    --accent-tint: rgba(212, 136, 90, 0.12);
-    --green: #6FA472;
-    --green-tint: rgba(111, 164, 114, 0.12);
-    --red: #D4715F;
-    --red-tint: rgba(212, 113, 95, 0.1);
-    --orange: #E5A035;
-    --orange-tint: rgba(229, 160, 53, 0.1);
-    --shadow: none;
-    --shadow-lg: 0 8px 32px rgba(0,0,0,0.3);
-  }
+  color-scheme: dark;
+  --bg: #08080A;
+  --bg-2: #0B0B0E;
+
+  --text: #F4F2EF;
+  --text-2: rgba(244,242,239,0.60);
+  --text-3: rgba(244,242,239,0.36);
+  --text-4: rgba(244,242,239,0.16);
+
+  --glass: rgba(255,255,255,0.035);
+  --glass-2: rgba(255,255,255,0.055);
+  --glass-3: rgba(255,255,255,0.085);
+  --glass-border: rgba(255,255,255,0.09);
+  --glass-border-2: rgba(255,255,255,0.15);
+  --hairline: rgba(255,255,255,0.07);
+
+  --accent: #FF7A3D;
+  --accent-2: #FF9E5E;
+  --accent-deep: #E85F27;
+  --accent-tint: rgba(255,122,61,0.13);
+  --accent-tint-2: rgba(255,122,61,0.22);
+  --accent-glow: rgba(255,122,61,0.55);
+
+  --green: #46D48A;
+  --green-tint: rgba(70,212,138,0.13);
+  --green-glow: rgba(70,212,138,0.5);
+  --red: #FF6B6B;
+  --red-tint: rgba(255,107,107,0.12);
+  --red-glow: rgba(255,107,107,0.5);
+  --amber: #FBBF24;
+  --amber-tint: rgba(251,191,36,0.13);
+  --amber-glow: rgba(251,191,36,0.5);
+  --blue: #5B9DFF;
+
+  --radius: 18px;
+  --radius-sm: 12px;
+  --radius-lg: 24px;
+  --radius-xl: 30px;
+  --topbar-h: 60px;
+
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --font-display: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
 
-html, body {
-  height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
-               "Helvetica Neue", "Hiragino Sans GB", sans-serif;
+html { height:100%; }
+body {
+  min-height:100%;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-size: 15px; line-height: 1.55;
-  color: var(--text); background: var(--bg);
+  color: var(--text);
+  background: var(--bg);
+  overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: var(--accent-tint-2); color: #fff; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.09);
+  border-radius: 20px; border: 3px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); background-clip: content-box; }
+
+/* Icon slots — every icon is inline Lucide SVG */
+.ic-slot { display:inline-flex; align-items:center; justify-content:center; line-height:0; }
+.ic-slot svg, svg.ic { width:1em; height:1em; display:block; flex-shrink:0; }
+
+/* Glass surface + top edge highlight (the signature "frosted" look) */
+.glass {
+  position: relative;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+}
+.glass::before {
+  content:''; position:absolute; inset:0; border-radius:inherit;
+  padding:1px; pointer-events:none; z-index:1;
+  background: linear-gradient(180deg, rgba(255,255,255,0.20), rgba(255,255,255,0.02) 34%, rgba(255,255,255,0) 72%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+/* ── Ambient Background ────────────────────────────────── */
+.ambient { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ambient-blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.5; will-change: transform; }
+.blob-1 {
+  width: 48vw; height: 48vw; top: -16vw; left: -10vw;
+  background: radial-gradient(circle, rgba(255,122,61,0.55), transparent 68%);
+  animation: drift1 26s var(--ease-io) infinite alternate;
+}
+.blob-2 {
+  width: 40vw; height: 40vw; top: -6vw; right: -12vw;
+  background: radial-gradient(circle, rgba(91,157,255,0.32), transparent 66%);
+  animation: drift2 32s var(--ease-io) infinite alternate;
+}
+.blob-3 {
+  width: 52vw; height: 52vw; bottom: -26vw; left: 28vw;
+  background: radial-gradient(circle, rgba(255,122,61,0.20), transparent 68%);
+  animation: drift3 38s var(--ease-io) infinite alternate;
+}
+@keyframes drift1 { to { transform: translate(8vw, 6vw) scale(1.12); } }
+@keyframes drift2 { to { transform: translate(-7vw, 9vw) scale(1.08); } }
+@keyframes drift3 { to { transform: translate(-10vw, -6vw) scale(1.15); } }
+
+.ambient-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.024) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.024) 1px, transparent 1px);
+  background-size: 54px 54px;
+  -webkit-mask-image: radial-gradient(ellipse 90% 62% at 50% 0%, #000 8%, transparent 72%);
+  mask-image: radial-gradient(ellipse 90% 62% at 50% 0%, #000 8%, transparent 72%);
+}
+.ambient-grain {
+  position: absolute; inset: -60%;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.04; mix-blend-mode: overlay;
+  animation: grain 7s steps(6) infinite;
+}
+@keyframes grain {
+  0%,100% { transform: translate(0,0); }
+  20% { transform: translate(-4%, 3%); }
+  40% { transform: translate(3%, -5%); }
+  60% { transform: translate(-3%, 4%); }
+  80% { transform: translate(4%, -3%); }
 }
 
-::selection { background: var(--accent-tint); color: var(--accent); }
-
-/* ── Top Bar ──────────────────────────────────────────── */
+/* Stacking above ambient */
+.main, .toast-container, #settings-overlay, #auth-screen { position: relative; z-index: 1; }
+.topbar { z-index: 100; }
+/* ── Top Bar ───────────────────────────────────────────── */
 .topbar {
-  position: fixed; top: 0; left: 0; right: 0;
-  height: var(--topbar-h);
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--sep);
-  z-index: 100;
+  position: fixed; top: 0; left: 0; right: 0; height: var(--topbar-h);
   display: flex; align-items: center; justify-content: center;
+  background: rgba(9,9,11,0.55);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid var(--hairline);
 }
-.topbar-inner {
-  width: 100%; max-width: 920px;
-  padding: 0 30px;
-  display: flex; align-items: center; gap: 32px;
-}
-.brand {
-  display: flex; align-items: center; gap: 10px;
-  user-select: none; flex-shrink: 0;
-}
+.topbar-inner { width: 100%; max-width: 1000px; padding: 0 28px; display: flex; align-items: center; gap: 26px; }
+.brand { display: flex; align-items: center; gap: 11px; user-select: none; flex-shrink: 0; }
 .brand-icon {
-  width: 28px; height: 28px; border-radius: 7px;
-  background: linear-gradient(135deg, #C2703B 0%, #D4885A 100%);
+  width: 32px; height: 32px; border-radius: 10px; color: #fff; font-size: 17px;
+  background: linear-gradient(140deg, var(--accent) 0%, var(--accent-deep) 100%);
   display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
+  box-shadow: 0 5px 18px -4px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.4);
 }
-.brand-icon svg { width: 15px; height: 15px; color: #fff; }
-.brand-name {
-  font-size: 16px; font-weight: 700;
-  letter-spacing: -0.3px; color: var(--text);
-}
+.brand-name { font-family: var(--font-display); font-size: 18px; font-weight: 600; letter-spacing: -0.4px; }
+
 .nav-tabs {
-  display: flex; gap: 4px;
+  position: relative; display: flex; gap: 2px; padding: 3px;
+  border-radius: 22px; background: var(--glass); border: 1px solid var(--hairline);
+}
+.nav-indicator {
+  position: absolute; top: 3px; left: 0; height: calc(100% - 6px);
+  border-radius: 18px; background: var(--glass-3); border: 1px solid var(--glass-border-2);
+  box-shadow: 0 2px 12px -2px rgba(0,0,0,0.55);
+  transition: transform 0.42s var(--ease-spring), width 0.42s var(--ease-spring);
+  z-index: 0; pointer-events: none;
 }
 .tab {
-  padding: 6px 16px; border-radius: 20px;
-  font-family: inherit; font-size: 14px; font-weight: 500;
-  color: var(--text-2); background: none;
-  border: none; cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
+  position: relative; z-index: 1; padding: 6px 17px; border-radius: 18px;
+  font-family: inherit; font-size: 13.5px; font-weight: 500; white-space: nowrap;
+  color: var(--text-3); background: none; border: none; cursor: pointer;
+  transition: color 0.25s ease;
 }
-.tab:hover { background: var(--bg-hover); color: var(--text); }
-.tab.active {
-  background: var(--accent-tint); color: var(--accent);
-  font-weight: 600;
-}
+.tab:hover { color: var(--text-2); }
+.tab.active { color: var(--text); font-weight: 600; }
 
-/* ── Main Content ─────────────────────────────────────── */
-.main {
-  padding-top: var(--topbar-h);
-  min-height: 100vh;
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 50%; font-size: 17px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; background: transparent; color: var(--text-3);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s var(--ease-spring);
 }
-.container {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 32px 30px 80px;
-}
+.icon-btn:hover { background: var(--glass-2); color: var(--text); }
+.icon-btn:active { transform: scale(0.92); }
 
-/* ── Page Header ──────────────────────────────────────── */
-.page-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 28px;
-}
+/* ── Layout ────────────────────────────────────────────── */
+.main { padding-top: var(--topbar-h); min-height: 100vh; }
+.container { max-width: 1000px; margin: 0 auto; padding: 46px 28px 100px; }
+.view { display: none; }
+.view.active { display: block; animation: viewIn 0.5s var(--ease-out) both; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* ── Page Header ───────────────────────────────────────── */
+.page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 32px; }
 .page-title {
-  font-size: 24px; font-weight: 700;
-  letter-spacing: -0.5px;
+  font-family: var(--font-display); font-size: 38px; font-weight: 600; line-height: 1.02; letter-spacing: -1.4px;
+  background: linear-gradient(168deg, #fff 18%, rgba(244,242,239,0.6));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
 }
-.page-actions {
-  display: flex; gap: 8px; align-items: center;
-}
-
-/* ── Buttons ──────────────────────────────────────────── */
+.page-sub { margin-top: 9px; font-size: 14px; color: var(--text-3); }
+.page-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+/* ── Buttons ───────────────────────────────────────────── */
 .btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  border: none; cursor: pointer;
-  font-family: inherit; font-size: 13px; font-weight: 500;
-  border-radius: 20px;
-  padding: 7px 18px;
-  transition: background 150ms ease, opacity 100ms ease, transform 80ms ease;
-  white-space: nowrap;
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: none; cursor: pointer; white-space: nowrap;
+  font-family: inherit; font-size: 13px; font-weight: 560; border-radius: 20px; padding: 8px 17px;
+  transition: transform 0.14s var(--ease-spring), background 0.2s ease, box-shadow 0.25s ease, color 0.2s ease, opacity 0.15s ease, border-color 0.2s ease;
 }
-.btn:active { transform: scale(0.97); }
-.btn:disabled { opacity: 0.35; pointer-events: none; }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-secondary {
-  background: var(--bg-surface); color: var(--text-2);
-  border: 1px solid var(--sep);
+.btn .ic-slot { font-size: 15px; }
+.btn:active { transform: scale(0.96); }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+
+.btn-primary {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent) 55%, var(--accent-deep));
+  box-shadow: 0 6px 20px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.32);
 }
-.btn-secondary:hover { background: var(--bg-hover); color: var(--text); }
-.btn-ghost { background: transparent; color: var(--text-2); padding: 7px 14px; }
-.btn-ghost:hover { background: var(--bg-hover); color: var(--text); }
-.btn-danger { background: transparent; color: var(--red); padding: 7px 14px; font-weight: 600; }
-.btn-danger:hover { background: var(--red-tint); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 32px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.42); }
+.btn-primary:active { transform: scale(0.96); }
+
+.btn-glass {
+  color: var(--text-2); background: var(--glass); border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+.btn-glass:hover { background: var(--glass-2); border-color: var(--glass-border-2); color: var(--text); }
+
+.btn-ghost { background: transparent; color: var(--text-2); padding: 8px 15px; }
+.btn-ghost:hover { background: var(--glass-2); color: var(--text); }
+.btn-danger { background: var(--red-tint); color: var(--red); padding: 8px 15px; font-weight: 600; }
+.btn-danger:hover { background: rgba(255,107,107,0.2); }
 
 .btn-spinner {
-  width: 14px; height: 14px;
-  border: 2px solid rgba(255,255,255,0.3);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 600ms linear infinite;
+  width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.28);
+  border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; flex-shrink: 0;
+}
+.btn-spinner.dark { border-color: var(--glass-border); border-top-color: var(--accent); }
+/* ── Stats Hero ────────────────────────────────────────── */
+.stats-grid {
+  display: grid; grid-template-columns: 1.5fr 1fr; grid-template-rows: auto auto;
+  gap: 14px; margin-bottom: 34px;
+}
+.stat-hero { grid-row: span 2; padding: 28px 30px; display: flex; align-items: center; justify-content: space-between; gap: 24px; overflow: hidden; }
+.stat-hero-info { display: flex; flex-direction: column; min-width: 0; }
+.stat-label { font-size: 11.5px; font-weight: 600; letter-spacing: 0.7px; text-transform: uppercase; color: var(--text-3); }
+.stat-hero-num {
+  font-family: var(--font-display); font-weight: 600; letter-spacing: -3px; font-size: 68px; line-height: 1;
+  margin-top: 12px; display: flex; align-items: baseline; gap: 10px; font-variant-numeric: tabular-nums;
+}
+.stat-hero-num .big {
+  background: linear-gradient(155deg, #fff 30%, var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.stat-hero-total { font-size: 26px; font-weight: 500; color: var(--text-4); letter-spacing: -0.5px; }
+.stat-hero-sub { margin-top: 16px; font-size: 13.5px; color: var(--text-2); display: inline-flex; align-items: center; gap: 7px; }
+.stat-hero-sub .ic-slot { font-size: 14px; color: var(--accent); }
+
+.stat-ring { position: relative; width: 118px; height: 118px; flex-shrink: 0; }
+.stat-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring-track { fill: none; stroke: rgba(255,255,255,0.08); stroke-width: 7; }
+.ring-prog {
+  fill: none; stroke: url(#ringgrad); stroke-width: 7; stroke-linecap: round;
+  stroke-dasharray: 270.2; stroke-dashoffset: 270.2;
+  transition: stroke-dashoffset 0.95s var(--ease-out); filter: drop-shadow(0 0 6px var(--accent-glow));
+}
+.stat-ring-label {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 23px; font-weight: 600; letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums; color: #fff;
 }
 
-/* ── Stats Row ────────────────────────────────────────── */
-.stats-row {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 12px; margin-bottom: 28px;
+.stat-card { padding: 20px 22px; display: flex; flex-direction: column; overflow: hidden; }
+.stat-ic {
+  width: 30px; height: 30px; border-radius: 9px; margin-bottom: 10px; font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-tint); color: var(--accent);
 }
-.stat-card {
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  padding: 18px 20px;
-  box-shadow: var(--shadow);
+.stat-card .stat-label { margin-bottom: 7px; }
+.stat-card .stat-num {
+  font-family: var(--font-display); font-size: 30px; font-weight: 600; letter-spacing: -1px; line-height: 1.05;
+  color: #fff; font-variant-numeric: tabular-nums;
 }
-.stat-label {
-  font-size: 12px; font-weight: 500;
-  color: var(--text-3);
-  letter-spacing: 0.3px;
-  margin-bottom: 6px;
-}
-.stat-value {
-  font-size: 26px; font-weight: 700;
-  letter-spacing: -0.8px;
-  line-height: 1.1;
-}
-.stat-value .stat-unit {
-  font-size: 14px; font-weight: 500;
-  color: var(--text-2); margin-left: 2px;
-}
-.stat-sub {
-  font-size: 12px; color: var(--text-3);
-  margin-top: 4px;
-}
+.stat-card .stat-num.num-mono { font-family: var(--font-mono); font-size: 25px; letter-spacing: -1.5px; }
+.stat-card .stat-num.pos { color: var(--green); }
+.stat-sub { font-size: 12.5px; color: var(--text-3); margin-top: 5px; }
 
-/* ── List Header ──────────────────────────────────────── */
-.list-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 10px; padding: 0 2px;
+/* Cursor-follow spotlight (used by stat cards + account rows) */
+[data-spotlight] { position: relative; }
+[data-spotlight]::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  opacity: 0; transition: opacity 0.35s ease; z-index: 0;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,0.07), transparent 62%);
 }
-.list-title {
-  font-size: 13px; font-weight: 600;
-  color: var(--text-2);
-  letter-spacing: 0.2px;
-}
+[data-spotlight]:hover::after { opacity: 1; }
+.stat-hero > *, .stat-card > * { position: relative; z-index: 1; }
+/* ── List Header ───────────────────────────────────────── */
+.list-header { display: flex; align-items: center; justify-content: space-between; margin: 0 4px 12px; }
+.list-title { font-size: 12px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text-3); }
 .sort-btn {
-  font-size: 12px; font-weight: 500;
-  color: var(--text-3); background: none;
-  border: none; cursor: pointer;
-  font-family: inherit;
-  padding: 4px 10px; border-radius: 12px;
-  transition: background 150ms ease, color 150ms ease;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 500; font-family: inherit;
+  color: var(--text-3); background: none; border: none; cursor: pointer;
+  padding: 5px 12px; border-radius: 20px; transition: background 0.2s, color 0.2s;
 }
-.sort-btn:hover { background: var(--bg-hover); color: var(--text-2); }
+.sort-btn .ic-slot { font-size: 13px; }
+.sort-btn:hover { background: var(--glass-2); color: var(--text-2); }
 .sort-btn.active { background: var(--accent-tint); color: var(--accent); }
 
-/* ── Account List ─────────────────────────────────────── */
-.account-list {
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
+/* ── Account List ──────────────────────────────────────── */
+.account-list { overflow: hidden; }
 .account-list:empty { display: none; }
-
 .account-row {
-  display: flex; align-items: center;
-  padding: 16px 20px; gap: 16px;
-  position: relative;
-  transition: background 100ms ease;
-  border-left: 3px solid transparent;
+  position: relative; display: flex; align-items: center; gap: 15px;
+  padding: 17px 22px 17px 22px; transition: background 0.25s ease;
 }
-.account-row:hover { background: var(--bg-hover); }
-.account-row + .account-row::before {
-  content: ''; position: absolute;
-  top: 0; left: 20px; right: 20px;
-  height: 1px; background: var(--sep);
-}
+.account-row > * { position: relative; z-index: 1; }
+.account-row:hover { background: var(--glass); }
+.account-row + .account-row { border-top: 1px solid var(--hairline); }
+.account-row.enter { animation: rowIn 0.55s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 45ms); }
+@keyframes rowIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
-.account-row.st-checking,
-.account-row.st-refreshing { border-left-color: var(--accent); }
-.account-row.st-success { border-left-color: var(--green); }
-.account-row.st-failed { border-left-color: var(--red); }
-.account-row.st-logging-in { border-left-color: var(--orange); }
-.account-row.st-inspecting { border-left-color: var(--orange); }
-.account-row.st-logged-in { border-left-color: var(--green); }
-.account-row.st-uncertain { border-left-color: var(--orange); }
-
+.acc-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--text-4); transition: background 0.3s, box-shadow 0.3s; }
 .account-main { flex: 1; min-width: 0; }
-.account-name {
-  font-size: 15px; font-weight: 600;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  margin-bottom: 2px;
-}
-.account-meta {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px;
-}
-.status-label {
-  font-weight: 500;
-  display: inline-flex; align-items: center; gap: 5px;
-}
-.status-label.idle { color: var(--text-3); }
-.status-label.checking,
-.status-label.refreshing { color: var(--accent); }
-.status-label.success { color: var(--green); }
-.status-label.failed { color: var(--red); }
-.status-label.logging-in { color: var(--orange); }
-.status-label.inspecting { color: var(--orange); }
-.status-label.logged-in { color: var(--green); }
-.status-label.uncertain { color: var(--orange); }
-.status-label.no-session { color: var(--text-3); }
-.status-label.login-failed { color: var(--red); }
-.status-label.inspect-failed { color: var(--red); }
-.meta-time { color: var(--text-3); font-size: 12px; }
+.account-name { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-note { font-size: 12px; color: var(--text-3); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-meta { display: flex; align-items: center; gap: 9px; font-size: 13px; margin-top: 3px; flex-wrap: wrap; }
 
 .account-balance-col {
-  font-size: 15px; font-weight: 600;
-  color: var(--text);
-  min-width: 72px; text-align: right;
-  flex-shrink: 0;
-  display: flex; align-items: center; justify-content: flex-end; gap: 2px;
+  font-family: var(--font-mono); font-size: 15px; font-weight: 500;
+  color: var(--text-3); min-width: 76px; text-align: right; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: flex-end; gap: 3px; font-variant-numeric: tabular-nums;
 }
-.account-balance-col.has-balance { color: var(--green); }
+.account-balance-col.has-balance { color: var(--green); text-shadow: 0 0 18px var(--green-glow); }
+.account-actions { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+/* ── Row States ────────────────────────────────────────── */
+.account-row.st-checking .acc-dot, .account-row.st-refreshing .acc-dot { background: var(--accent); box-shadow: 0 0 11px var(--accent-glow); animation: dotPulse 1.4s ease infinite; }
+.account-row.st-success .acc-dot, .account-row.st-logged-in .acc-dot { background: var(--green); box-shadow: 0 0 11px var(--green-glow); }
+.account-row.st-failed .acc-dot { background: var(--red); box-shadow: 0 0 11px var(--red-glow); }
+.account-row.st-logging-in .acc-dot, .account-row.st-inspecting .acc-dot, .account-row.st-uncertain .acc-dot { background: var(--amber); box-shadow: 0 0 11px var(--amber-glow); }
+@keyframes dotPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-.account-actions {
-  display: flex; align-items: center; gap: 6px;
-  flex-shrink: 0;
-}
+.status-label { font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
+.status-label.idle, .status-label.no-session { color: var(--text-3); }
+.status-label.checking, .status-label.queued, .status-label.refreshing { color: var(--accent); }
+.status-label.success, .status-label.logged-in { color: var(--green); }
+.status-label.failed, .status-label.login-failed, .status-label.inspect-failed { color: var(--red); }
+.status-label.logging-in, .status-label.inspecting, .status-label.uncertain, .status-label.needs-login { color: var(--amber); }
+.meta-time { color: var(--text-4); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row-spinner { width: 18px; height: 18px; border: 2px solid var(--glass-border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; flex-shrink: 0; }
 
-/* ── Row Action Buttons ───────────────────────────────── */
+/* Row action buttons */
 .btn-action {
-  font-size: 13px; font-weight: 500;
-  padding: 5px 14px; border-radius: 14px;
-  border: none; cursor: pointer;
-  font-family: inherit;
-  transition: all 120ms ease;
-  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12.5px; font-weight: 560; padding: 6px 15px; border-radius: 16px;
+  border: 1px solid transparent; cursor: pointer; font-family: inherit; white-space: nowrap;
+  transition: transform 0.14s var(--ease-spring), background 0.2s, color 0.2s, border-color 0.2s;
 }
-.btn-action:active { transform: scale(0.95); }
-.btn-action.default {
-  background: var(--fill); color: var(--text-2);
-  border: 1px solid var(--sep);
-}
-.btn-action.default:hover { background: var(--bg-active); color: var(--text); }
-.btn-action.setup {
-  background: var(--accent-tint); color: var(--accent); font-weight: 600;
-}
-.btn-action.setup:hover { background: rgba(194,112,59,0.15); }
-.btn-action.ok {
-  background: var(--green-tint); color: var(--green);
-  pointer-events: none;
-}
-.btn-action.fail {
-  background: var(--red-tint); color: var(--red);
-}
-.btn-action.fail:hover { background: rgba(196,91,74,0.12); }
-.btn-action:disabled { opacity: 0.35; pointer-events: none; }
+.btn-action:active { transform: scale(0.94); }
+.btn-action:disabled { opacity: 0.4; pointer-events: none; }
+.btn-action.default { background: var(--glass-2); color: var(--text-2); border-color: var(--glass-border); }
+.btn-action.default:hover { background: var(--glass-3); color: var(--text); border-color: var(--glass-border-2); }
+.btn-action.setup { background: var(--accent-tint); color: var(--accent); font-weight: 600; }
+.btn-action.setup:hover { background: var(--accent-tint-2); }
+.btn-action.ok { background: var(--green-tint); color: var(--green); pointer-events: none; }
+.btn-action.fail { background: var(--red-tint); color: var(--red); }
+.btn-action.fail:hover { background: rgba(255,107,107,0.2); }
 
-.btn-open-browser {
-  width: 28px; height: 28px;
+.icon-round {
+  width: 30px; height: 30px; border-radius: 50%; font-size: 14px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: 1px solid var(--sep);
-  cursor: pointer;
-  background: var(--fill); color: var(--text-2);
-  transition: background 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
-  flex-shrink: 0;
+  border: 1px solid var(--glass-border); cursor: pointer; background: var(--glass); color: var(--text-3);
+  transition: transform 0.14s var(--ease-spring), background 0.2s, color 0.2s, border-color 0.2s, opacity 0.2s; flex-shrink: 0;
 }
-.btn-open-browser:hover { background: var(--bg-active); color: var(--text); }
-.btn-open-browser:active { transform: scale(0.96); }
-.btn-open-browser:disabled { opacity: 0.35; pointer-events: none; }
-.btn-open-browser svg { width: 14px; height: 14px; }
+.icon-round:hover { background: var(--glass-2); color: var(--text); }
+.icon-round:active { transform: scale(0.92); }
+.icon-round:disabled { opacity: 0.45; pointer-events: none; }
+.btn-open-browser:hover { color: var(--blue); border-color: rgba(91,157,255,0.4); }
+.btn-probe:hover { color: var(--accent); border-color: rgba(255,122,61,0.4); }
+.btn-probe.no-token { opacity: 0.55; }
+.btn-probe.no-token:hover { opacity: 1; }
 
-.btn-remove {
-  width: 26px; height: 26px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: transparent; color: var(--text-3);
-  opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
-  font-family: inherit;
+.btn-edit, .btn-remove, .btn-refresh-one {
+  width: 28px; height: 28px; border-radius: 50%; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; cursor: pointer; background: transparent; color: var(--text-4);
+  opacity: 0; transition: opacity 0.2s, background 0.2s, color 0.2s, transform 0.14s var(--ease-spring); flex-shrink: 0;
 }
-.account-row:hover .btn-remove { opacity: 1; }
-.btn-remove:hover { background: var(--red-tint); color: var(--red); }
-.btn-remove svg { width: 12px; height: 12px; }
+.btn-refresh-one { font-size: 12px; }
+.account-row:hover .btn-edit, .account-row:hover .btn-remove { opacity: 1; }
+.account-row:hover .btn-refresh-one { opacity: 0.6; }
+.btn-edit:hover { background: var(--accent-tint); color: var(--accent); opacity: 1; }
+.btn-remove:hover { background: var(--red-tint); color: var(--red); opacity: 1; }
+.btn-refresh-one:hover { background: var(--accent-tint); color: var(--accent); opacity: 1 !important; }
+.btn-edit:active, .btn-remove:active, .btn-refresh-one:active { transform: scale(0.9); }
 
-.btn-edit {
-  width: 26px; height: 26px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: transparent; color: var(--text-3);
-  opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
-  font-family: inherit;
+/* Health badge */
+.health-badge {
+  font-size: 11.5px; font-weight: 600; padding: 2px 10px; border-radius: 20px;
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; border: 1px solid transparent;
 }
-.account-row:hover .btn-edit { opacity: 1; }
-.btn-edit:hover { background: var(--accent-tint); color: var(--accent); }
-.btn-edit svg { width: 13px; height: 13px; }
-
-.account-note {
-  font-size: 12px; color: var(--text-3);
-  margin-top: 1px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-.row-spinner {
-  width: 18px; height: 18px;
-  border: 2px solid var(--fill);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 600ms linear infinite;
-  flex-shrink: 0;
-}
-
-/* ── Confirm Delete ───────────────────────────────────── */
-.confirm-row {
-  display: flex; align-items: center;
-  padding: 14px 20px; gap: 14px;
-  background: var(--red-tint);
-  animation: slideDown 200ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.confirm-msg {
-  flex: 1; font-size: 14px; color: var(--text-2);
-}
+.health-badge .ic-slot { font-size: 12px; }
+.health-badge.ok { background: var(--green-tint); color: var(--green); border-color: rgba(70,212,138,0.25); }
+.health-badge.fail { background: var(--red-tint); color: var(--red); border-color: rgba(255,107,107,0.25); }
+.health-badge.checking { background: var(--accent-tint); color: var(--accent); }
+/* ── Confirm / Edit Rows ───────────────────────────────── */
+.confirm-row { display: flex; align-items: center; gap: 14px; padding: 15px 22px; background: var(--red-tint); animation: slideDown 0.25s var(--ease-out); }
+.confirm-msg { flex: 1; font-size: 14px; color: var(--text-2); }
 .confirm-msg strong { color: var(--text); font-weight: 600; }
 .confirm-btns { display: flex; gap: 8px; }
 
-/* ── Edit Row ─────────────────────────────────────────── */
-.edit-row {
-  display: flex; align-items: center;
-  padding: 14px 20px; gap: 12px;
-  background: var(--accent-tint);
-  animation: slideDown 200ms cubic-bezier(0.16, 1, 0.3, 1);
-  flex-wrap: wrap;
-}
-.edit-fields {
-  flex: 1; min-width: 200px;
-  display: flex; gap: 8px; flex-wrap: wrap;
-}
+.edit-row { display: flex; align-items: center; gap: 12px; padding: 15px 22px; flex-wrap: wrap; background: var(--accent-tint); animation: slideDown 0.25s var(--ease-out); }
+.edit-fields { flex: 1; min-width: 200px; display: flex; gap: 8px; flex-wrap: wrap; }
 .edit-input {
-  padding: 6px 10px;
-  border: 1px solid var(--sep); border-radius: var(--radius-sm);
-  background: var(--bg-surface); color: var(--text);
-  font-family: inherit; font-size: 14px; outline: none;
-  transition: border-color 120ms ease;
-  min-width: 0;
+  padding: 7px 11px; border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.28); color: var(--text); font-family: inherit; font-size: 14px; outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s; min-width: 0;
 }
-.edit-input:focus { border-color: var(--accent); }
-.edit-input.name { flex: 0 1 160px; }
-.edit-input.note { flex: 2 1 180px; }
-.edit-input.token { flex: 3 1 240px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-
-.token-field-group {
-  display: inline-flex; align-items: center; gap: 6px;
-  flex: 3 1 280px; min-width: 200px;
-}
+.edit-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+.edit-input.name { flex: 0 1 150px; }
+.edit-input.note { flex: 2 1 170px; }
+.edit-input.token { flex: 3 1 240px; font-family: var(--font-mono); font-size: 13px; }
+.token-field-group { display: inline-flex; align-items: center; gap: 7px; flex: 3 1 280px; min-width: 200px; }
 .token-set-badge {
-  font-size: 12px; font-weight: 600;
-  color: var(--green);
-  background: var(--green-tint);
-  padding: 3px 9px; border-radius: 10px;
-  white-space: nowrap; flex-shrink: 0;
-  cursor: pointer; border: none; font-family: inherit;
-  transition: background 120ms ease, color 120ms ease;
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600;
+  color: var(--green); background: var(--green-tint); padding: 4px 10px; border-radius: 20px;
+  white-space: nowrap; flex-shrink: 0; cursor: pointer; border: none; font-family: inherit; transition: background 0.2s, color 0.2s;
 }
+.token-set-badge .ic-slot { font-size: 12px; }
 .token-set-badge:hover { background: var(--red-tint); color: var(--red); }
 .token-set-badge.will-clear { background: var(--red-tint); color: var(--red); }
 .edit-btns { display: flex; gap: 8px; flex-shrink: 0; }
 
-/* ── Empty State ──────────────────────────────────────── */
-.empty-state {
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  padding: 80px 24px; text-align: center;
-}
+/* ── Empty State ───────────────────────────────────────── */
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 84px 24px; text-align: center; }
 .empty-icon {
-  width: 64px; height: 64px;
-  border-radius: 16px;
-  background: var(--fill);
+  width: 72px; height: 72px; border-radius: 20px; margin-bottom: 22px; font-size: 30px;
   display: flex; align-items: center; justify-content: center;
-  margin-bottom: 18px;
+  background: var(--glass); border: 1px solid var(--glass-border); color: var(--accent);
+  box-shadow: 0 0 44px -12px var(--accent-glow);
 }
-.empty-icon svg { width: 28px; height: 28px; color: var(--text-3); }
-.empty-title {
-  font-size: 18px; font-weight: 700;
-  margin-bottom: 8px;
-}
-.empty-desc {
-  font-size: 14px; color: var(--text-2);
-  margin-bottom: 24px; max-width: 280px;
-  line-height: 1.6;
-}
+.empty-title { font-family: var(--font-display); font-size: 22px; font-weight: 600; letter-spacing: -0.6px; margin-bottom: 10px; }
+.empty-desc { font-size: 14px; color: var(--text-2); margin-bottom: 26px; max-width: 300px; line-height: 1.65; }
 
-/* ── Activity ─────────────────────────────────────────── */
-.view { display: none; }
-.view.active { display: block; }
-
-.activity-group { margin-bottom: 24px; }
-.activity-date {
-  font-size: 13px; font-weight: 600;
-  color: var(--text-2);
-  margin-bottom: 8px; padding: 0 2px;
-}
-.activity-list {
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-.activity-entry {
-  display: flex; align-items: center;
-  padding: 12px 20px; gap: 14px;
-  font-size: 14px;
-  position: relative;
-}
-.activity-entry + .activity-entry::before {
-  content: ''; position: absolute;
-  top: 0; left: 20px; right: 20px;
-  height: 1px; background: var(--sep);
-}
-.activity-time {
-  color: var(--text-3); width: 56px;
-  flex-shrink: 0; font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-.activity-name {
-  font-weight: 600; width: 130px; flex-shrink: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.activity-result {
-  flex: 1; color: var(--text-2); font-size: 13px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.activity-badge {
-  font-size: 12px; font-weight: 600;
-  padding: 2px 10px; border-radius: 10px;
-  flex-shrink: 0;
-}
-.activity-badge.success { background: var(--green-tint); color: var(--green); }
-.activity-badge.failed { background: var(--red-tint); color: var(--red); }
-.activity-badge.skipped { background: var(--fill); color: var(--text-3); }
-.activity-badge.uncertain { background: rgba(196, 139, 74, 0.16); color: var(--orange); }
-
-.activity-empty {
-  text-align: center; padding: 80px 24px;
-  color: var(--text-3); font-size: 15px;
-}
-
-/* ── Toasts ───────────────────────────────────────────── */
-.toast-container {
-  position: fixed; top: 64px; right: 20px;
-  z-index: 200;
-  display: flex; flex-direction: column; gap: 8px;
-  pointer-events: none;
-}
-.toast {
-  background: var(--bg-surface);
-  color: var(--text);
-  border: 1px solid var(--sep);
-  border-radius: var(--radius-sm);
-  padding: 10px 16px;
-  font-size: 13px; font-weight: 500;
-  box-shadow: var(--shadow-lg);
-  transform: translateX(120%);
-  transition: transform 350ms cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 200ms ease;
-  pointer-events: auto;
-  max-width: 320px;
-}
-.toast.visible { transform: translateX(0); }
-.toast.hiding { opacity: 0; transform: translateX(40px); }
-.toast.error { border-left: 3px solid var(--red); }
-.toast.success-toast { border-left: 3px solid var(--green); }
-
-/* ── Animations ───────────────────────────────────────── */
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes slideDown {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* ── Refresh One Button ────────────────────────────────── */
-.btn-refresh-one {
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: transparent; color: var(--text-3);
-  opacity: 0; margin-left: 4px; vertical-align: middle;
-  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
-  flex-shrink: 0;
-}
-.account-row:hover .btn-refresh-one { opacity: 0.6; }
-.btn-refresh-one:hover { opacity: 1 !important; background: var(--accent-tint); color: var(--accent); }
-.btn-refresh-one svg { width: 12px; height: 12px; }
-
-/* ── Health Probe ─────────────────────────────────────── */
-.btn-probe {
-  width: 28px; height: 28px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: 1px solid var(--sep);
-  cursor: pointer;
-  background: var(--fill); color: var(--text-2);
-  transition: background 120ms ease, color 120ms ease, opacity 120ms ease, transform 80ms ease;
-  flex-shrink: 0;
-}
-.btn-probe:hover { background: var(--accent-tint); color: var(--accent); }
-.btn-probe:active { transform: scale(0.96); }
-.btn-probe:disabled { opacity: 0.5; pointer-events: none; }
-.btn-probe svg { width: 15px; height: 15px; }
-.btn-probe.no-token { opacity: 0.5; }
-.btn-probe.no-token:hover { opacity: 1; }
-
-.health-badge {
-  font-size: 12px; font-weight: 600;
-  padding: 1px 9px; border-radius: 9px;
-  display: inline-flex; align-items: center; gap: 4px;
-  white-space: nowrap;
-}
-.health-badge.ok { background: var(--green-tint); color: var(--green); }
-.health-badge.fail { background: var(--red-tint); color: var(--red); }
-.health-badge.checking { background: var(--accent-tint); color: var(--accent); }
-
-/* ── Settings Modal ──────────────────────────────────── */
+/* ── Activity ──────────────────────────────────────────── */
+.activity-group { margin-bottom: 26px; }
+.activity-date { font-size: 12px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-3); margin: 0 4px 11px; }
+.activity-list { overflow: hidden; }
+.activity-entry { position: relative; display: flex; align-items: center; gap: 14px; padding: 14px 22px; font-size: 14px; transition: background 0.25s; }
+.activity-entry:hover { background: var(--glass); }
+.activity-entry + .activity-entry { border-top: 1px solid var(--hairline); }
+.activity-time { color: var(--text-4); width: 52px; flex-shrink: 0; font-size: 13px; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+.activity-name { font-weight: 600; width: 132px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-result { flex: 1; color: var(--text-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; padding: 3px 11px; border-radius: 20px; flex-shrink: 0; border: 1px solid transparent; }
+.activity-badge .ic-slot { font-size: 12px; }
+.activity-badge.success { background: var(--green-tint); color: var(--green); border-color: rgba(70,212,138,0.22); }
+.activity-badge.failed { background: var(--red-tint); color: var(--red); border-color: rgba(255,107,107,0.22); }
+.activity-badge.skipped { background: var(--glass-2); color: var(--text-3); }
+.activity-badge.uncertain { background: var(--amber-tint); color: var(--amber); border-color: rgba(251,191,36,0.22); }
+.activity-empty { text-align: center; padding: 90px 24px; color: var(--text-3); font-size: 15px; }
+/* ── Settings Modal ────────────────────────────────────── */
 #settings-overlay {
-  position: fixed; inset: 0; z-index: 250;
-  background: rgba(0, 0, 0, 0.35);
+  position: fixed; inset: 0; z-index: 250; padding: 20px;
   display: flex; align-items: center; justify-content: center;
-  padding: 20px;
+  background: rgba(0,0,0,0.55); -webkit-backdrop-filter: blur(7px); backdrop-filter: blur(7px);
+  animation: fadeIn 0.25s ease;
 }
 #settings-overlay.hidden { display: none; }
-.settings-card {
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  width: 100%; max-width: 460px;
-  max-height: 88vh; overflow-y: auto;
-  padding: 26px 28px 22px;
-  animation: slideDown 200ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.settings-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 20px;
-}
-.settings-title { font-size: 18px; font-weight: 700; }
+.settings-card { width: 100%; max-width: 470px; max-height: 88vh; overflow-y: auto; padding: 26px 28px 22px; animation: modalIn 0.4s var(--ease-spring); }
+.settings-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.settings-title { font-family: var(--font-display); font-size: 20px; font-weight: 600; letter-spacing: -0.4px; }
 .settings-close {
-  width: 28px; height: 28px; border-radius: 50%;
-  border: none; cursor: pointer;
-  background: var(--fill); color: var(--text-2);
+  width: 30px; height: 30px; border-radius: 50%; font-size: 15px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px; line-height: 1; font-family: inherit;
+  border: none; cursor: pointer; background: var(--glass-2); color: var(--text-2); font-family: inherit; transition: background 0.2s, color 0.2s;
 }
-.settings-close:hover { background: var(--bg-active); color: var(--text); }
+.settings-close:hover { background: var(--glass-3); color: var(--text); }
 .settings-section { margin-bottom: 24px; }
-.settings-section-title {
-  font-size: 13px; font-weight: 600;
-  color: var(--text-2); margin-bottom: 12px;
-  letter-spacing: 0.2px;
-}
-.settings-row {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 10px; font-size: 14px;
-}
-.settings-row > label:first-child { color: var(--text-2); flex: 0 0 88px; }
+.settings-section-title { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.3px; color: var(--text-2); margin-bottom: 14px; }
+.settings-section-title .ic-slot { font-size: 15px; color: var(--accent); }
+.settings-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 14px; }
+.settings-row > label:first-child { color: var(--text-2); flex: 0 0 84px; }
 .settings-input {
-  flex: 1; min-width: 0;
-  padding: 6px 10px;
-  border: 1px solid var(--sep); border-radius: var(--radius-sm);
-  background: var(--bg); color: var(--text);
-  font-family: inherit; font-size: 14px; outline: none;
-  transition: border-color 120ms ease;
+  flex: 1; min-width: 0; padding: 8px 11px; border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.28); color: var(--text); font-family: inherit; font-size: 14px; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
 }
-.settings-input:focus { border-color: var(--accent); }
+.settings-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
 .settings-input.short { flex: 0 0 110px; }
-.settings-hint {
-  font-size: 12px; color: var(--text-3);
-  line-height: 1.5; margin-top: 4px;
+.settings-hint { font-size: 12px; color: var(--text-3); line-height: 1.55; margin-top: 6px; }
+.settings-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.next-run-line { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--accent); background: var(--accent-tint); border-radius: var(--radius-sm); padding: 9px 13px; margin-top: 10px; }
+.next-run-line .ic-slot { font-size: 14px; }
+
+/* ── Import Account Modal (AgentRouter) ────────────────── */
+#import-overlay {
+  position: fixed; inset: 0; z-index: 250; padding: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55); -webkit-backdrop-filter: blur(7px); backdrop-filter: blur(7px);
+  animation: fadeIn 0.25s ease;
 }
-.settings-footer {
-  display: flex; justify-content: flex-end; gap: 8px;
-  margin-top: 4px; padding-top: 16px;
-  border-top: 1px solid var(--sep);
+#import-overlay.hidden { display: none; }
+.import-list { display: grid; gap: 8px; max-height: 46vh; overflow-y: auto; margin: 4px 0 14px; }
+.import-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+  background: var(--glass-2); color: var(--text); font-family: inherit; font-size: 14px;
+  cursor: pointer; text-align: left; transition: border-color 0.2s, background 0.2s;
 }
-.next-run-line {
-  font-size: 13px; color: var(--accent);
-  background: var(--accent-tint);
-  border-radius: var(--radius-sm);
-  padding: 7px 12px; margin-top: 8px;
-}
+.import-item:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-tint); }
+.import-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.import-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-note { font-size: 12px; color: var(--text-3); }
+.import-flag { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.import-flag.done { color: var(--text-3); }
+.import-empty { padding: 26px 10px; text-align: center; color: var(--text-3); font-size: 13px; }
 
 /* macOS-style switch */
-.switch { position: relative; display: inline-block; width: 40px; height: 24px; flex-shrink: 0; }
+.switch { position: relative; display: inline-block; width: 42px; height: 25px; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; }
-.switch .slider {
-  position: absolute; inset: 0; cursor: pointer;
-  background: var(--fill); border: 1px solid var(--sep);
-  border-radius: 24px;
-  transition: background 180ms ease;
-}
-.switch .slider::before {
-  content: ''; position: absolute;
-  width: 20px; height: 20px; left: 1px; top: 1px;
-  background: #fff; border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-  transition: transform 180ms ease;
-}
-.switch input:checked + .slider { background: var(--green); border-color: var(--green); }
-.switch input:checked + .slider::before { transform: translateX(16px); }
-
-.btn-settings {
-  width: 32px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: transparent; color: var(--text-3);
-  margin-left: auto; flex-shrink: 0;
-  transition: background 120ms ease, color 120ms ease;
-}
-.btn-settings:hover { background: var(--bg-hover); color: var(--text); }
-.btn-settings svg { width: 17px; height: 17px; }
-.btn-settings + .btn-logout { margin-left: 0; }
-
-/* ── Auth Screen ─────────────────────────────────────── */
-#auth-screen {
-  position: fixed; inset: 0; z-index: 300;
-  background: var(--bg);
-  display: flex; align-items: center; justify-content: center;
-}
+.switch .slider { position: absolute; inset: 0; cursor: pointer; background: var(--glass-3); border: 1px solid var(--glass-border); border-radius: 25px; transition: background 0.25s var(--ease-out), border-color 0.25s, box-shadow 0.25s; }
+.switch .slider::before { content: ''; position: absolute; width: 21px; height: 21px; left: 1px; top: 1px; background: #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,0.4); transition: transform 0.28s var(--ease-spring); }
+.switch input:checked + .slider { background: linear-gradient(135deg, var(--green), #35b673); border-color: transparent; box-shadow: 0 0 14px -2px var(--green-glow); }
+.switch input:checked + .slider::before { transform: translateX(17px); }
+/* ── Auth Screen ───────────────────────────────────────── */
+#auth-screen { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; padding: 20px; }
 #auth-screen.hidden { display: none; }
-.auth-card {
-  background: var(--bg-surface);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  padding: 40px 36px;
-  width: 100%; max-width: 380px;
-}
+.auth-card { width: 100%; max-width: 380px; padding: 42px 36px; animation: modalIn 0.5s var(--ease-spring); }
 .auth-icon {
-  width: 48px; height: 48px; border-radius: 14px;
-  background: linear-gradient(135deg, #C2703B 0%, #D4885A 100%);
+  width: 54px; height: 54px; border-radius: 16px; margin: 0 auto 22px; color: #fff; font-size: 26px;
+  background: linear-gradient(140deg, var(--accent), var(--accent-deep));
   display: flex; align-items: center; justify-content: center;
-  margin: 0 auto 20px;
+  box-shadow: 0 8px 30px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.42);
 }
-.auth-icon svg { width: 24px; height: 24px; color: #fff; }
-.auth-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; text-align: center; }
-.auth-desc { font-size: 14px; color: var(--text-2); margin-bottom: 24px; text-align: center; }
+.auth-title { font-family: var(--font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.5px; text-align: center; margin-bottom: 7px; }
+.auth-desc { font-size: 14px; color: var(--text-2); text-align: center; margin-bottom: 26px; }
 .auth-input {
-  width: 100%; padding: 10px 14px;
-  border: 1px solid var(--sep); border-radius: var(--radius-sm);
-  background: var(--bg); color: var(--text);
-  font-family: inherit; font-size: 15px; outline: none;
-  transition: border-color 150ms ease;
-  margin-bottom: 12px;
+  width: 100%; padding: 11px 15px; margin-bottom: 12px; border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.3); color: var(--text); font-family: inherit; font-size: 15px; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
 }
-.auth-input:focus { border-color: var(--accent); }
+.auth-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
 .auth-input.hidden { display: none; }
 .auth-error { font-size: 13px; color: var(--red); margin-bottom: 12px; min-height: 18px; text-align: center; }
 .auth-btn {
-  width: 100%; padding: 10px;
-  background: var(--accent); color: #fff;
-  border: none; border-radius: var(--radius-sm);
-  font-family: inherit; font-size: 15px; font-weight: 600;
-  cursor: pointer; transition: background 150ms ease;
+  width: 100%; padding: 12px; color: #fff; border: none; border-radius: var(--radius-sm);
+  font-family: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent) 55%, var(--accent-deep));
+  box-shadow: 0 6px 20px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.3);
+  transition: transform 0.14s var(--ease-spring), box-shadow 0.25s;
 }
-.auth-btn:hover { background: var(--accent-hover); }
+.auth-btn:hover { box-shadow: 0 10px 30px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.42); }
+.auth-btn:active { transform: scale(0.98); }
 .auth-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* ── Logout Button ───────────────────────────────────── */
-.btn-logout {
-  width: 32px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: transparent; color: var(--text-3);
-  margin-left: auto; flex-shrink: 0;
-  transition: background 120ms ease, color 120ms ease;
+/* ── Toasts ────────────────────────────────────────────── */
+.toast-container { position: fixed; top: 72px; right: 22px; z-index: 400; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast {
+  display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500; max-width: 340px; color: var(--text);
+  background: rgba(20,20,24,0.8); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid var(--glass-border); box-shadow: 0 14px 44px -14px rgba(0,0,0,0.85);
+  transform: translateX(130%); transition: transform 0.5s var(--ease-spring), opacity 0.3s ease; pointer-events: auto;
 }
-.btn-logout:hover { background: var(--bg-hover); color: var(--text); }
-.btn-logout svg { width: 16px; height: 16px; }
+.toast .ic-slot { font-size: 16px; flex-shrink: 0; color: var(--accent); }
+.toast.visible { transform: translateX(0); }
+.toast.hiding { opacity: 0; transform: translateX(40px); }
+.toast.error { border-left: 3px solid var(--red); }
+.toast.error .ic-slot { color: var(--red); }
+.toast.success-toast { border-left: 3px solid var(--green); }
+.toast.success-toast .ic-slot { color: var(--green); }
 
-/* ── Responsive ───────────────────────────────────────── */
-@media (max-width: 640px) {
-  .container { padding: 24px 16px 60px; }
-  .topbar-inner { padding: 0 16px; }
-  .page-header { flex-direction: column; align-items: flex-start; gap: 14px; }
-  .stats-row { grid-template-columns: 1fr; }
-  .account-row { padding: 14px 16px; }
-  .activity-entry { padding: 10px 16px; }
-  .account-balance-col { min-width: 60px; }
+/* ── Keyframes ─────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalIn { from { opacity: 0; transform: translateY(16px) scale(0.97); } to { opacity: 1; transform: none; } }
+/* ── Responsive ────────────────────────────────────────── */
+@media (max-width: 860px) {
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .stat-hero { grid-column: span 2; grid-row: auto; }
 }
+@media (max-width: 680px) {
+  .container { padding: 32px 16px 72px; }
+  .topbar-inner { padding: 0 16px; gap: 14px; }
+  .brand-name { display: none; }
+  .page-header { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .page-title { font-size: 30px; }
+  .page-actions { width: 100%; flex-wrap: wrap; }
+  .page-actions .btn { flex: 1 1 auto; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .stat-hero { grid-column: auto; }
+  .stat-hero-num { font-size: 56px; }
+  .account-row { padding: 15px 16px; gap: 12px; }
+  .account-actions { gap: 5px; }
+  .activity-entry { padding: 12px 16px; }
+  .activity-name { width: 100px; }
+  .toast-container { left: 16px; right: 16px; top: 66px; }
+  .toast { max-width: none; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  .ambient-blob, .ambient-grain { animation: none !important; }
+}
+/* ── Light Theme ───────────────────────────────────────── */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F4F1EC;
+  --bg-2: #FBF9F5;
+  --text: #1A1815;
+  --text-2: rgba(26,24,21,0.62);
+  --text-3: rgba(26,24,21,0.42);
+  --text-4: rgba(26,24,21,0.20);
+  --glass: rgba(255,255,255,0.62);
+  --glass-2: rgba(255,255,255,0.80);
+  --glass-3: rgba(255,255,255,0.92);
+  --glass-border: rgba(26,24,21,0.08);
+  --glass-border-2: rgba(26,24,21,0.15);
+  --hairline: rgba(26,24,21,0.07);
+  --accent: #E35D22;
+  --accent-2: #FF7A3D;
+  --accent-deep: #C94D18;
+  --accent-tint: rgba(227,93,34,0.10);
+  --accent-tint-2: rgba(227,93,34,0.18);
+  --accent-glow: rgba(227,93,34,0.35);
+  --green: #2FA968;
+  --green-tint: rgba(47,169,104,0.12);
+  --green-glow: rgba(47,169,104,0.30);
+  --red: #E5484D;
+  --red-tint: rgba(229,72,77,0.10);
+  --red-glow: rgba(229,72,77,0.30);
+  --amber: #C2650A;
+  --amber-tint: rgba(194,101,10,0.12);
+  --amber-glow: rgba(194,101,10,0.30);
+  --blue: #3B7DD8;
+}
+/* Glass: light mode leans on soft shadow (not edge highlight) for depth */
+:root[data-theme="light"] .glass { box-shadow: 0 1px 2px rgba(26,24,21,0.04), 0 10px 30px -14px rgba(26,24,21,0.14); }
+:root[data-theme="light"] .glass::before { background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0) 45%); }
+/* Ambient toned down; grid + grain go dark-on-light */
+:root[data-theme="light"] .ambient-blob { opacity: 0.30; }
+:root[data-theme="light"] .blob-2 { opacity: 0.18; }
+:root[data-theme="light"] .ambient-grid {
+  background-image:
+    linear-gradient(rgba(26,24,21,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(26,24,21,0.035) 1px, transparent 1px);
+}
+:root[data-theme="light"] .ambient-grain { opacity: 0.02; mix-blend-mode: multiply; }
+/* Surfaces that hardcode dark values */
+:root[data-theme="light"] .topbar { background: rgba(244,241,236,0.66); }
+:root[data-theme="light"] .toast { background: rgba(255,255,255,0.9); box-shadow: 0 14px 44px -14px rgba(26,24,21,0.28); }
+/* Gradient / white text → dark */
+:root[data-theme="light"] .page-title { background: linear-gradient(168deg, #1A1815 20%, rgba(26,24,21,0.55)); -webkit-background-clip: text; background-clip: text; }
+:root[data-theme="light"] .stat-hero-num .big { background: linear-gradient(155deg, #1A1815 35%, var(--accent)); -webkit-background-clip: text; background-clip: text; }
+:root[data-theme="light"] .stat-ring-label,
+:root[data-theme="light"] .stat-card .stat-num { color: #1A1815; }
+/* Track / spotlight / scrollbar / selection reversed */
+:root[data-theme="light"] .ring-track { stroke: rgba(26,24,21,0.10); }
+:root[data-theme="light"] [data-spotlight]::after { background: radial-gradient(260px circle at var(--mx,50%) var(--my,50%), rgba(26,24,21,0.05), transparent 62%); }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(26,24,21,0.16); background-clip: content-box; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(26,24,21,0.28); background-clip: content-box; }
+:root[data-theme="light"] ::selection { background: var(--accent-tint-2); color: var(--accent); }
+/* Inputs use a white fill on light glass */
+:root[data-theme="light"] .edit-input,
+:root[data-theme="light"] .settings-input,
+:root[data-theme="light"] .auth-input { background: rgba(255,255,255,0.75); }
 </style>
 </head>
 
 <body>
+<div class="ambient" aria-hidden="true">
+  <div class="ambient-blob blob-1"></div>
+  <div class="ambient-blob blob-2"></div>
+  <div class="ambient-blob blob-3"></div>
+  <div class="ambient-grid"></div>
+  <div class="ambient-grain"></div>
+</div>
+
 <div id="auth-screen" class="hidden">
-  <div class="auth-card">
-    <div class="auth-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-    </div>
+  <div class="auth-card glass">
+    <div class="auth-icon"><i class="ic-slot" data-icon="shieldCheck"></i></div>
     <div class="auth-title" id="auth-title">登录</div>
     <div class="auth-desc" id="auth-desc">请输入管理员密码</div>
     <div id="auth-form">
@@ -774,46 +721,51 @@ html, body {
 <nav class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <div class="brand-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-      </div>
+      <div class="brand-icon"><i class="ic-slot" data-icon="route"></i></div>
       <span class="brand-name">AnyRouter</span>
     </div>
-    <div class="nav-tabs">
-      <button class="tab active" data-view="dashboard" onclick="switchView('dashboard')">仪表盘</button>
+    <div class="nav-tabs" id="nav-tabs">
+      <span class="nav-indicator" id="nav-indicator"></span>
+      <button class="tab active" data-view="dashboard" data-site="anyrouter" onclick="switchView('dashboard', 'anyrouter')">AnyRouter</button>
+      <button class="tab" data-view="dashboard" data-site="agentrouter" onclick="switchView('dashboard', 'agentrouter')">AgentRouter</button>
       <button class="tab" data-view="activity" onclick="switchView('activity')">签到记录</button>
     </div>
-    <button class="btn-settings" id="btn-settings" onclick="openSettings()" title="设置" style="display:none">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-    </button>
-    <button class="btn-logout" id="btn-logout" onclick="authLogout()" title="退出登录" style="display:none">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-    </button>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="btn-theme" onclick="toggleTheme()" title="切换主题"></button>
+      <button class="icon-btn" id="btn-settings" onclick="openSettings()" title="设置" style="display:none"><i class="ic-slot" data-icon="settings"></i></button>
+      <button class="icon-btn" id="btn-logout" onclick="authLogout()" title="退出登录" style="display:none"><i class="ic-slot" data-icon="logout"></i></button>
+    </div>
   </div>
 </nav>
 
 <main class="main">
   <div class="container">
     <section id="view-dashboard" class="view active">
-      <div class="page-header">
-        <h1 class="page-title">账号管理</h1>
-        <div class="page-actions" id="page-actions">
-          <button class="btn btn-secondary" id="btn-check-health" onclick="checkHealthAll()">检测可用</button>
-          <button class="btn btn-secondary" id="btn-refresh" onclick="refreshBalance()">刷新余额</button>
-          <button class="btn btn-secondary" onclick="loginNew()">添加账号</button>
-          <button class="btn btn-primary" id="btn-check-all" onclick="checkAll()">全部签到</button>
+      <header class="page-header">
+        <div class="page-head-text">
+          <h1 class="page-title">账号管理</h1>
+          <p class="page-sub" id="page-sub">概览你的全部 AnyRouter 账号</p>
         </div>
-      </div>
+        <div class="page-actions" id="page-actions">
+          <button class="btn btn-glass" id="btn-check-health" onclick="checkHealthAll()"><i class="ic-slot" data-icon="activity"></i><span>检测可用</span></button>
+          <button class="btn btn-glass" id="btn-refresh" onclick="refreshBalance()"><i class="ic-slot" data-icon="refresh"></i><span>刷新余额</span></button>
+          <button class="btn btn-glass" onclick="addAccount()"><i class="ic-slot" data-icon="userPlus"></i><span>添加账号</span></button>
+          <button class="btn btn-primary" id="btn-check-all" onclick="checkAll()"><i class="ic-slot" data-icon="checkCheck"></i><span>全部签到</span></button>
+        </div>
+      </header>
       <div id="stats-row"></div>
       <div id="list-header-container"></div>
-      <div id="account-list" class="account-list"></div>
+      <div id="account-list" class="account-list glass"></div>
       <div id="empty-state" style="display:none"></div>
     </section>
 
     <section id="view-activity" class="view">
-      <div class="page-header">
-        <h1 class="page-title">签到记录</h1>
-      </div>
+      <header class="page-header">
+        <div class="page-head-text">
+          <h1 class="page-title">签到记录</h1>
+          <p class="page-sub">历史签到明细</p>
+        </div>
+      </header>
       <div id="activity-content"></div>
     </section>
   </div>
@@ -821,15 +773,31 @@ html, body {
 
 <div class="toast-container" id="toasts"></div>
 
+<div id="import-overlay" class="hidden" onclick="if(event.target===this)closeImport()">
+  <div class="settings-card glass" style="max-width:460px">
+    <div class="settings-header">
+      <div class="settings-title">添加 AgentRouter 账号</div>
+      <button class="settings-close" onclick="closeImport()" title="关闭"><i class="ic-slot" data-icon="x"></i></button>
+    </div>
+    <div class="settings-hint" style="margin:0 0 12px">
+      从 AnyRouter 账号复制登录环境：LinuxDO 会话会一起带过去，打开浏览器后点一次「使用 LinuxDO 继续」即可，不需要输入密码。
+    </div>
+    <div id="import-list" class="import-list"></div>
+    <div class="settings-footer">
+      <button class="btn btn-ghost" onclick="closeImport(); loginNew()">直接打开浏览器登录</button>
+    </div>
+  </div>
+</div>
+
 <div id="settings-overlay" class="hidden" onclick="if(event.target===this)closeSettings()">
-  <div class="settings-card">
+  <div class="settings-card glass">
     <div class="settings-header">
       <div class="settings-title">设置</div>
-      <button class="settings-close" onclick="closeSettings()" title="关闭">✕</button>
+      <button class="settings-close" onclick="closeSettings()" title="关闭"><i class="ic-slot" data-icon="x"></i></button>
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">定时自动签到</div>
+      <div class="settings-section-title"><i class="ic-slot" data-icon="alarmClock"></i><span>定时自动签到</span></div>
       <div class="settings-row">
         <label>启用</label>
         <label class="switch">
@@ -849,19 +817,19 @@ html, body {
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">签到结果通知（可选）</div>
+      <div class="settings-section-title"><i class="ic-slot" data-icon="bell"></i><span>签到结果通知（可选）</span></div>
       <div class="settings-row">
         <label>推送 URL</label>
         <input type="text" class="settings-input" id="set-notify-url" placeholder="https://api.day.app/你的Key" spellcheck="false">
       </div>
       <div class="settings-hint">支持 Bark（api.day.app）、Server酱（ftqq.com）或任意接收 JSON POST 的 Webhook。定时签到完成后推送结果摘要。</div>
       <div class="settings-row" style="margin-top:8px">
-        <button class="btn btn-secondary" onclick="testNotify()">发送测试通知</button>
+        <button class="btn btn-glass" onclick="testNotify()"><i class="ic-slot" data-icon="send"></i><span>发送测试通知</span></button>
       </div>
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">修改管理员密码</div>
+      <div class="settings-section-title"><i class="ic-slot" data-icon="lock"></i><span>修改管理员密码</span></div>
       <div class="settings-row">
         <label>原密码</label>
         <input type="password" class="settings-input" id="set-pw-old" autocomplete="current-password">
@@ -871,7 +839,7 @@ html, body {
         <input type="password" class="settings-input" id="set-pw-new" autocomplete="new-password">
       </div>
       <div class="settings-row" style="margin-top:8px">
-        <button class="btn btn-secondary" onclick="changePassword()">修改密码</button>
+        <button class="btn btn-glass" onclick="changePassword()"><i class="ic-slot" data-icon="key"></i><span>修改密码</span></button>
       </div>
     </div>
 
@@ -883,21 +851,64 @@ html, body {
 </div>
 
 <script>
+/* ── Icons (inline Lucide) ─────────────────────────────── */
+const ICONS = {
+  route: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+  shieldCheck: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  userPlus: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  checkCheck: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  arrowDown: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  alarmClock: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/><path d="M6.38 18.7 4 21"/><path d="M17.64 18.67 20 21"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  key: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+  externalLink: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+  coins: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+  alertTriangle: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  minus: '<path d="M5 12h14"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+};
+function ic(name, extra) {
+  return '<svg class="ic' + (extra ? ' ' + extra : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
+}
+function hydrateIcons(root) {
+  (root || document).querySelectorAll('[data-icon]').forEach(el => {
+    if (!el.firstElementChild) el.innerHTML = ic(el.dataset.icon);
+  });
+}
+/* ── State ─────────────────────────────────────────────── */
 let accounts = [];
+let currentSite = 'anyrouter';
 let pollTimer = null;
 let confirmingDelete = null;
 let editingAccount = null;
 let sortByBalance = true;
 let settingsInfo = null;
 let pendingTokenClear = false;
+let pendingEnter = true;          // play stagger-in on next dashboard render
+const statCache = {};             // remembers last numeric value for count-up
 
-/* ── API ──────────────────────────────────────────────── */
+/* ── API ───────────────────────────────────────────────── */
+// Account-scoped endpoints are served under /api/ar/* for AgentRouter so the
+// two tabs keep separate accounts, sessions, status and history.
+const AR_API_RE = /^\/api\/(accounts|login|login-new|open-browser|checkin|refresh-balance|check-health|history)(\/|$|\?)/;
 async function api(path, opts = {}) {
+  if (currentSite === 'agentrouter' && AR_API_RE.test(path)) {
+    path = path.replace(/^\/api\//, '/api/ar/');
+  }
   try {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
+    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
     if (res.status === 401) { showAuthScreen(); return null; }
     return await res.json();
   } catch {
@@ -906,379 +917,415 @@ async function api(path, opts = {}) {
   }
 }
 
-/* ── Data ─────────────────────────────────────────────── */
+/* ── Data ──────────────────────────────────────────────── */
 async function refresh() {
+  const site = currentSite;
   const data = await api('/api/accounts');
-  if (data) { accounts = data; renderDashboard(); }
+  if (data && site === currentSite) { accounts = data; renderDashboard(); }
 }
-
 async function loadHistory() {
+  const site = currentSite;
   const data = await api('/api/history');
-  if (data) renderActivity(data);
+  if (data && site === currentSite) renderActivity(data);
 }
-
 function getSortedAccounts() {
   if (!sortByBalance) return [...accounts];
   const balanceNum = a => a.balance ? parseFloat(a.balance.replace(/[$,]/g, '')) : -1;
   return [...accounts].sort((a, b) => balanceNum(b) - balanceNum(a));
 }
 
-/* ── Navigation ───────────────────────────────────────── */
-function switchView(name) {
+/* ── Navigation ────────────────────────────────────────── */
+function switchView(name, site) {
+  if (site) currentSite = site;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
-  document.querySelectorAll('.tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.view === name)
-  );
+  document.querySelectorAll('.tab').forEach(t => {
+    const active = site
+      ? t.dataset.site === site
+      : (t.dataset.view === name && !t.dataset.site);
+    t.classList.toggle('active', active);
+  });
+  updateSiteChrome();
+  moveNavIndicator();
   if (name === 'activity') loadHistory();
-  if (name === 'dashboard') refresh();
+  else { pendingEnter = true; refresh(); }
 }
-
-/* ── Dashboard Render ─────────────────────────────────── */
+function updateSiteChrome() {
+  const sub = document.getElementById('page-sub');
+  if (sub) {
+    sub.textContent = currentSite === 'agentrouter'
+      ? '概览你的全部 AgentRouter 账号'
+      : '概览你的全部 AnyRouter 账号';
+  }
+}
+function moveNavIndicator() {
+  const tabs = document.getElementById('nav-tabs');
+  const ind = document.getElementById('nav-indicator');
+  if (!tabs || !ind) return;
+  const active = tabs.querySelector('.tab.active');
+  if (!active) return;
+  ind.style.width = active.offsetWidth + 'px';
+  ind.style.transform = 'translateX(' + active.offsetLeft + 'px)';
+}
+/* ── Dashboard ─────────────────────────────────────────── */
 function renderDashboard() {
   const total = accounts.length;
   const checked = accounts.filter(a => a.checkedToday || a.state === 'success').length;
+  const loggedIn = accounts.filter(a => a.hasSession).length;
   const hasActive = accounts.some(a =>
-    ['checking', 'logging_in', 'refreshing', 'inspecting'].includes(a.state) ||
-    (a.health && a.health.state === 'checking')
-  );
+    ['queued', 'checking', 'logging_in', 'refreshing', 'inspecting'].includes(a.state) ||
+    (a.health && a.health.state === 'checking'));
 
-  // Calculate total balance
-  let totalBalance = 0;
-  let balanceCount = 0;
+  let totalBalance = 0, balanceCount = 0;
   for (const a of accounts) {
     if (a.balance) {
       const num = parseFloat(a.balance.replace(/[$,]/g, ''));
       if (!isNaN(num)) { totalBalance += num; balanceCount++; }
     }
   }
+  const pct = total ? Math.round(checked / total * 100) : 0;
 
-  // Stats row
-  const statsEl = document.getElementById('stats-row');
-  if (total > 0) {
-    const balanceStr = totalBalance > 0 ? `$${totalBalance.toFixed(2)}` : '--';
-    const sched = settingsInfo && settingsInfo.schedule;
-    const schedSub = sched && sched.enabled && settingsInfo.nextRun
-      ? `自动签到 ${fmtNextRun(settingsInfo.nextRun)}`
-      : (checked === total ? '全部完成' : `还剩 ${total - checked} 个`);
-    statsEl.innerHTML = `
-      <div class="stats-row">
-        <div class="stat-card">
-          <div class="stat-label">今日签到</div>
-          <div class="stat-value">${checked}<span class="stat-unit">/ ${total}</span></div>
-          <div class="stat-sub">${schedSub}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">总余额</div>
-          <div class="stat-value">${balanceStr}</div>
-          <div class="stat-sub">${balanceCount} 个账号有余额</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">账号数量</div>
-          <div class="stat-value">${total}</div>
-          <div class="stat-sub">${accounts.filter(a => a.hasSession).length} 个已登录</div>
-        </div>
-      </div>`;
-  } else {
-    statsEl.innerHTML = '';
-  }
+  renderStats(total, checked, loggedIn, totalBalance, balanceCount, pct);
+  renderActionButtons(total);
+  renderListHeader(total);
 
-  // Check-all button state
-  const btn = document.getElementById('btn-check-all');
-  const btnRefresh = document.getElementById('btn-refresh');
-  const isRefreshing = accounts.some(a => a.state === 'refreshing');
-  const isChecking = accounts.some(a => a.state === 'checking');
-
-  if (isChecking) {
-    const doneCount = accounts.filter(a => !['checking'].includes(a.state)).length;
-    btn.innerHTML = `<span class="btn-spinner"></span> 签到中 ${doneCount}/${total}`;
-    btn.disabled = true;
-  } else {
-    btn.innerHTML = '全部签到';
-    btn.disabled = total === 0;
-  }
-
-  if (isRefreshing) {
-    btnRefresh.innerHTML = `<span class="btn-spinner" style="border-color:var(--sep);border-top-color:var(--accent)"></span> 刷新中`;
-    btnRefresh.disabled = true;
-  } else {
-    btnRefresh.innerHTML = '刷新余额';
-    btnRefresh.disabled = total === 0;
-  }
-
-  const btnHealth = document.getElementById('btn-check-health');
-  if (btnHealth) {
-    const isProbing = accounts.some(a => a.health && a.health.state === 'checking');
-    const tokenCount = accounts.filter(a => a.hasToken).length;
-    if (isProbing) {
-      btnHealth.innerHTML = `<span class="btn-spinner" style="border-color:var(--sep);border-top-color:var(--accent)"></span> 检测中`;
-      btnHealth.disabled = true;
-    } else {
-      btnHealth.innerHTML = '检测可用';
-      btnHealth.disabled = tokenCount === 0;
-    }
-  }
-
-  // List header
-  const lhContainer = document.getElementById('list-header-container');
-  if (total > 0) {
-    const sortClass = sortByBalance ? ' active' : '';
-    lhContainer.innerHTML = `
-      <div class="list-header">
-        <span class="list-title">账号列表</span>
-        <button class="sort-btn${sortClass}" onclick="toggleSort()">
-          ${sortByBalance ? '↓ 按余额排序' : '按余额排序'}
-        </button>
-      </div>`;
-  } else {
-    lhContainer.innerHTML = '';
-  }
-
-  // Account list
   const list = document.getElementById('account-list');
   const empty = document.getElementById('empty-state');
 
   if (total === 0) {
     list.innerHTML = '';
     empty.style.display = '';
-    empty.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <line x1="19" y1="8" x2="19" y2="14"/>
-            <line x1="16" y1="11" x2="22" y2="11"/>
-          </svg>
-        </div>
-        <div class="empty-title">还没有账号</div>
-        <div class="empty-desc">点击下方按钮打开浏览器，登录后自动识别账号名称。</div>
-        <button class="btn btn-primary" onclick="loginNew()">打开浏览器登录</button>
-      </div>`;
+    empty.className = 'empty-state glass';
+    const isAR = currentSite === 'agentrouter';
+    empty.innerHTML =
+      '<div class="empty-icon">' + ic('userPlus') + '</div>' +
+      '<div class="empty-title">还没有账号</div>' +
+      '<div class="empty-desc">' + (isAR
+        ? '可以从 AnyRouter 账号复制登录环境，LinuxDO 会话会一起带过去，无需再次输入密码。'
+        : '点击下方按钮打开浏览器，登录后会自动识别账号名称并保存会话。') + '</div>' +
+      '<button class="btn btn-primary" onclick="' + (isAR ? 'openImportDialog()' : 'loginNew()') + '">' +
+        ic('userPlus') + '<span>' + (isAR ? '添加 AgentRouter 账号' : '打开浏览器登录') + '</span></button>';
+    stopPolling();
     return;
   }
-
   empty.style.display = 'none';
+  empty.className = '';
 
   const sorted = getSortedAccounts();
-
-  // Snapshot in-progress edit form state so polling re-renders don't wipe user input
-  let editSnapshot = null;
-  if (editingAccount) {
-    const prev = document.querySelector('.edit-row');
-    if (prev) {
-      const pn = prev.querySelector('[data-edit-name]');
-      const pt = prev.querySelector('[data-edit-note]');
-      const pk = prev.querySelector('[data-edit-token]');
-      const ae = document.activeElement;
-      editSnapshot = {
-        origName: prev.dataset.origName,
-        nameVal: pn.value,
-        noteVal: pt.value,
-        tokenVal: pk ? pk.value : '',
-        focus: ae === pn ? 'name' : ae === pt ? 'note' : ae === pk ? 'token' : null,
-        selStart: ae && ae.selectionStart != null ? ae.selectionStart : 0,
-        selEnd: ae && ae.selectionEnd != null ? ae.selectionEnd : 0,
-      };
-    }
-  }
+  const editSnapshot = captureEditSnapshot();
+  const doEnter = pendingEnter;
+  pendingEnter = false;
 
   let html = '';
-  for (const a of sorted) {
+  sorted.forEach((a, i) => {
     if (editingAccount === a.name) html += renderEditRow(a);
     else if (confirmingDelete === a.name) html += renderConfirmRow(a.name);
-    else html += renderAccountRow(a);
-  }
+    else html += renderAccountRow(a, i, doEnter);
+  });
   list.innerHTML = html;
 
-  if (editingAccount) {
-    const row = document.querySelector('.edit-row');
-    if (row) {
-      const nameEl = row.querySelector('[data-edit-name]');
-      const noteEl = row.querySelector('[data-edit-note]');
-      const tokenEl = row.querySelector('[data-edit-token]');
-      if (editSnapshot && editSnapshot.origName === editingAccount) {
-        nameEl.value = editSnapshot.nameVal;
-        noteEl.value = editSnapshot.noteVal;
-        if (tokenEl) tokenEl.value = editSnapshot.tokenVal || '';
-        if (editSnapshot.focus) {
-          const target = editSnapshot.focus === 'name' ? nameEl
-            : editSnapshot.focus === 'note' ? noteEl : tokenEl;
-          if (target) {
-            target.focus();
-            try { target.setSelectionRange(editSnapshot.selStart, editSnapshot.selEnd); } catch {}
-          }
-        }
-      } else {
-        nameEl.focus();
-        nameEl.select();
-      }
-    }
-  }
-
+  restoreEditSnapshot(editSnapshot);
   if (hasActive) startPolling(); else stopPolling();
 }
 
-function renderAccountRow(a) {
+function renderStats(total, checked, loggedIn, totalBalance, balanceCount, pct) {
+  const el = document.getElementById('stats-row');
+  if (total === 0) { el.innerHTML = ''; return; }
+  const balanceStr = totalBalance > 0 ? totalBalance.toFixed(2) : '0.00';
+  const sched = settingsInfo && settingsInfo.schedule;
+  let heroSub;
+  if (sched && sched.enabled && settingsInfo.nextRun)
+    heroSub = ic('clock') + '<span>自动签到 ' + esc(fmtNextRun(settingsInfo.nextRun)) + '</span>';
+  else if (checked === total)
+    heroSub = ic('check') + '<span>今日全部完成</span>';
+  else
+    heroSub = ic('clock') + '<span>还剩 ' + (total - checked) + ' 个未签到</span>';
+
+  const C = 270.2;
+  const offset = C * (1 - pct / 100);
+
+  el.innerHTML =
+    '<div class="stats-grid">' +
+      '<div class="stat-hero" data-spotlight>' +
+        '<div class="stat-hero-info">' +
+          '<div class="stat-label">今日签到</div>' +
+          '<div class="stat-hero-num"><span class="big" data-stat="checked" data-to="' + checked + '">' + checked + '</span><span class="stat-hero-total">/ ' + total + '</span></div>' +
+          '<div class="stat-hero-sub">' + heroSub + '</div>' +
+        '</div>' +
+        '<div class="stat-ring">' +
+          '<svg viewBox="0 0 100 100"><defs><linearGradient id="ringgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF9E5E"/><stop offset="1" stop-color="#E85F27"/></linearGradient></defs>' +
+            '<circle class="ring-track" cx="50" cy="50" r="43"/>' +
+            '<circle class="ring-prog" id="ring-prog" cx="50" cy="50" r="43" style="stroke-dashoffset:' + C + '"/>' +
+          '</svg>' +
+          '<div class="stat-ring-label"><span data-stat="pct" data-to="' + pct + '">' + pct + '</span>%</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="stat-card" data-spotlight>' +
+        '<div class="stat-ic">' + ic('coins') + '</div>' +
+        '<div class="stat-label">总余额</div>' +
+        '<div class="stat-num num-mono' + (totalBalance > 0 ? ' pos' : '') + '">$<span data-stat="balance" data-to="' + balanceStr + '" data-dec="2">' + balanceStr + '</span></div>' +
+        '<div class="stat-sub">' + balanceCount + ' 个账号有余额</div>' +
+      '</div>' +
+      '<div class="stat-card" data-spotlight>' +
+        '<div class="stat-ic">' + ic('users') + '</div>' +
+        '<div class="stat-label">账号数量</div>' +
+        '<div class="stat-num"><span data-stat="total" data-to="' + total + '">' + total + '</span></div>' +
+        '<div class="stat-sub">' + loggedIn + ' 个已登录</div>' +
+      '</div>' +
+    '</div>';
+
+  el.querySelectorAll('[data-stat]').forEach(animateStat);
+  requestAnimationFrame(() => { const r = document.getElementById('ring-prog'); if (r) r.style.strokeDashoffset = offset; });
+}
+
+function animateStat(node) {
+  const key = node.dataset.stat;
+  const to = parseFloat(node.dataset.to);
+  const dec = parseInt(node.dataset.dec || '0', 10);
+  const from = statCache[key] === undefined ? 0 : statCache[key];
+  if (isNaN(to)) return;
+  if (from === to) { node.textContent = to.toFixed(dec); statCache[key] = to; return; }
+  const dur = 700, t0 = performance.now();
+  function tick(now) {
+    const p = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - p, 3);
+    node.textContent = (from + (to - from) * e).toFixed(dec);
+    if (p < 1) requestAnimationFrame(tick);
+    else { node.textContent = to.toFixed(dec); statCache[key] = to; }
+  }
+  requestAnimationFrame(tick);
+}
+
+function renderActionButtons(total) {
+  const btn = document.getElementById('btn-check-all');
+  const isChecking = accounts.some(a => ['queued', 'checking'].includes(a.state));
+  if (isChecking) {
+    const doneCount = accounts.filter(a => !['queued', 'checking'].includes(a.state)).length;
+    const current = accounts.find(a => a.state === 'checking');
+    const currentText = current ? ' · ' + esc(current.name) : '';
+    btn.innerHTML = '<span class="btn-spinner"></span><span>签到中 ' + doneCount + '/' + total + currentText + '</span>';
+    btn.disabled = true;
+  } else {
+    btn.innerHTML = ic('checkCheck') + '<span>全部签到</span>';
+    btn.disabled = total === 0;
+  }
+
+  const btnRefresh = document.getElementById('btn-refresh');
+  if (accounts.some(a => a.state === 'refreshing')) {
+    btnRefresh.innerHTML = '<span class="btn-spinner dark"></span><span>刷新中</span>';
+    btnRefresh.disabled = true;
+  } else {
+    btnRefresh.innerHTML = ic('refresh') + '<span>刷新余额</span>';
+    btnRefresh.disabled = total === 0;
+  }
+
+  const btnHealth = document.getElementById('btn-check-health');
+  if (btnHealth) {
+    if (accounts.some(a => a.health && a.health.state === 'checking')) {
+      btnHealth.innerHTML = '<span class="btn-spinner dark"></span><span>检测中</span>';
+      btnHealth.disabled = true;
+    } else {
+      btnHealth.innerHTML = ic('activity') + '<span>检测可用</span>';
+      btnHealth.disabled = accounts.filter(a => a.hasToken).length === 0;
+    }
+  }
+}
+
+function renderListHeader(total) {
+  const c = document.getElementById('list-header-container');
+  if (total === 0) { c.innerHTML = ''; return; }
+  const activeCls = sortByBalance ? ' active' : '';
+  const arrow = sortByBalance ? ic('arrowDown') : '';
+  c.innerHTML =
+    '<div class="list-header">' +
+      '<span class="list-title">账号列表 · ' + total + '</span>' +
+      '<button class="sort-btn' + activeCls + '" onclick="toggleSort()">' + arrow + '<span>按余额排序</span></button>' +
+    '</div>';
+}
+
+function captureEditSnapshot() {
+  if (!editingAccount) return null;
+  const prev = document.querySelector('.edit-row');
+  if (!prev) return null;
+  const pn = prev.querySelector('[data-edit-name]');
+  const pt = prev.querySelector('[data-edit-note]');
+  const pk = prev.querySelector('[data-edit-token]');
+  const ae = document.activeElement;
+  return {
+    origName: prev.dataset.origName,
+    nameVal: pn.value, noteVal: pt.value, tokenVal: pk ? pk.value : '',
+    focus: ae === pn ? 'name' : ae === pt ? 'note' : ae === pk ? 'token' : null,
+    selStart: ae && ae.selectionStart != null ? ae.selectionStart : 0,
+    selEnd: ae && ae.selectionEnd != null ? ae.selectionEnd : 0,
+  };
+}
+function restoreEditSnapshot(snap) {
+  if (!editingAccount) return;
+  const row = document.querySelector('.edit-row');
+  if (!row) return;
+  const nameEl = row.querySelector('[data-edit-name]');
+  const noteEl = row.querySelector('[data-edit-note]');
+  const tokenEl = row.querySelector('[data-edit-token]');
+  if (snap && snap.origName === editingAccount) {
+    nameEl.value = snap.nameVal;
+    noteEl.value = snap.noteVal;
+    if (tokenEl) tokenEl.value = snap.tokenVal || '';
+    if (snap.focus) {
+      const target = snap.focus === 'name' ? nameEl : snap.focus === 'note' ? noteEl : tokenEl;
+      if (target) { target.focus(); try { target.setSelectionRange(snap.selStart, snap.selEnd); } catch {} }
+    }
+  } else {
+    nameEl.focus();
+    nameEl.select();
+  }
+}
+/* ── Row Renderers ─────────────────────────────────────── */
+function renderAccountRow(a, i, doEnter) {
+  const n = esc(a.name);
   const stClass = rowStateClass(a);
-  const statusHtml = statusLabel(a);
-  const action = actionBtn(a);
-  const browserAction = browserBtn(a);
-  const probe = probeBtn(a);
-  const health = healthBadge(a);
+  const enterCls = doEnter ? ' enter' : '';
+  const noteHtml = a.note ? '<div class="account-note" title="' + esc(a.note) + '">' + esc(a.note) + '</div>' : '';
   const balanceText = a.balance || '--';
   const balanceClass = a.balance ? ' has-balance' : '';
-  const x = `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3.5" y1="3.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="3.5" x2="3.5" y2="10.5"/></svg>`;
-  const pencil = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
-  const noteHtml = a.note ? `<div class="account-note" title="${esc(a.note)}">${esc(a.note)}</div>` : '';
-  const canRefresh = a.hasSession && !['checking','refreshing','logging_in','inspecting'].includes(a.state);
-  const refreshBtn = canRefresh ? `<button class="btn-refresh-one" onclick="event.stopPropagation();refreshBalanceOne('${esc(a.name)}')" title="刷新余额"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>` : '';
-
-  return `
-    <div class="account-row ${stClass}">
-      <div class="account-main">
-        <div class="account-name">${esc(a.name)}</div>
-        ${noteHtml}
-        <div class="account-meta">
-          ${statusHtml}${health}
-        </div>
-      </div>
-      <div class="account-balance-col${balanceClass}">${esc(balanceText)}${refreshBtn}</div>
-      <div class="account-actions">
-        ${probe}
-        ${browserAction}
-        ${action}
-        <button class="btn-edit" onclick="startEdit('${esc(a.name)}')" title="编辑账号名 / 备注">${pencil}</button>
-        <button class="btn-remove" onclick="confirmDelete('${esc(a.name)}')" title="删除">${x}</button>
-      </div>
-    </div>`;
+  const canRefresh = a.hasSession && !['queued','checking','refreshing','logging_in','inspecting'].includes(a.state);
+  const refreshBtn = canRefresh
+    ? '<button class="btn-refresh-one" onclick="event.stopPropagation();refreshBalanceOne(\'' + n + '\')" title="刷新余额">' + ic('refresh') + '</button>'
+    : '';
+  return '' +
+    '<div class="account-row ' + stClass + enterCls + '" data-spotlight style="--i:' + i + '">' +
+      '<div class="acc-dot"></div>' +
+      '<div class="account-main">' +
+        '<div class="account-name">' + n + '</div>' +
+        noteHtml +
+        '<div class="account-meta">' + statusLabel(a) + healthBadge(a) + '</div>' +
+      '</div>' +
+      '<div class="account-balance-col' + balanceClass + '">' + esc(balanceText) + refreshBtn + '</div>' +
+      '<div class="account-actions">' +
+        probeBtn(a) + browserBtn(a) + actionBtn(a) +
+        '<button class="btn-edit" onclick="startEdit(\'' + n + '\')" title="编辑账号名 / 备注 / 令牌">' + ic('pencil') + '</button>' +
+        '<button class="btn-remove" onclick="confirmDelete(\'' + n + '\')" title="删除">' + ic('x') + '</button>' +
+      '</div>' +
+    '</div>';
 }
 
 function renderConfirmRow(name) {
-  return `
-    <div class="confirm-row">
-      <span class="confirm-msg">确定移除 <strong>${esc(name)}</strong> 及其会话数据？</span>
-      <span class="confirm-btns">
-        <button class="btn btn-ghost" onclick="cancelDelete()">取消</button>
-        <button class="btn btn-danger" onclick="doDelete('${esc(name)}')">移除</button>
-      </span>
-    </div>`;
+  const n = esc(name);
+  return '' +
+    '<div class="confirm-row">' +
+      '<span class="confirm-msg">确定移除 <strong>' + n + '</strong> 及其会话数据？</span>' +
+      '<span class="confirm-btns">' +
+        '<button class="btn btn-ghost" onclick="cancelDelete()">取消</button>' +
+        '<button class="btn btn-danger" onclick="doDelete(\'' + n + '\')">移除</button>' +
+      '</span>' +
+    '</div>';
 }
 
 function renderEditRow(a) {
   const n = esc(a.name);
   const note = esc(a.note || '');
-  const tokenPlaceholder = a.hasToken
-    ? `留空则不改，当前 ${esc(a.tokenMask || '')}`
-    : 'API 令牌 sk-...（用于可用性检测）';
+  const tokenPlaceholder = a.hasToken ? '留空则不改，当前 ' + esc(a.tokenMask || '') : 'API 令牌 sk-...（用于可用性检测）';
   const tokenSetBadge = a.hasToken
     ? (pendingTokenClear
-        ? '<button class="token-set-badge will-clear" onclick="toggleTokenClear()" title="点击撤销">✕ 保存后清除</button>'
-        : '<button class="token-set-badge" onclick="toggleTokenClear()" title="点击可清除已保存的令牌">✓ 已设置</button>')
+        ? '<button class="token-set-badge will-clear" onclick="toggleTokenClear()" title="点击撤销">' + ic('x') + '保存后清除</button>'
+        : '<button class="token-set-badge" onclick="toggleTokenClear()" title="点击可清除已保存的令牌">' + ic('check') + '已设置</button>')
     : '';
-  return `
-    <div class="edit-row" data-orig-name="${n}">
-      <div class="edit-fields">
-        <input type="text" class="edit-input name" data-edit-name value="${n}" placeholder="账号名" autocomplete="off" maxlength="100" onkeydown="onEditKey(event)">
-        <input type="text" class="edit-input note" data-edit-note value="${note}" placeholder="备注（可选）" autocomplete="off" maxlength="200" onkeydown="onEditKey(event)">
-        <div class="token-field-group">
-          <input type="text" class="edit-input token" data-edit-token value="" placeholder="${tokenPlaceholder}" autocomplete="off" maxlength="200" spellcheck="false" onkeydown="onEditKey(event)">
-          ${tokenSetBadge}
-        </div>
-      </div>
-      <div class="edit-btns">
-        <button class="btn btn-ghost" onclick="cancelEdit()">取消</button>
-        <button class="btn btn-primary" onclick="saveEdit()">保存</button>
-      </div>
-    </div>`;
+  return '' +
+    '<div class="edit-row" data-orig-name="' + n + '">' +
+      '<div class="edit-fields">' +
+        '<input type="text" class="edit-input name" data-edit-name value="' + n + '" placeholder="账号名" autocomplete="off" maxlength="100" onkeydown="onEditKey(event)">' +
+        '<input type="text" class="edit-input note" data-edit-note value="' + note + '" placeholder="备注（可选）" autocomplete="off" maxlength="200" onkeydown="onEditKey(event)">' +
+        '<div class="token-field-group">' +
+          '<input type="text" class="edit-input token" data-edit-token value="" placeholder="' + tokenPlaceholder + '" autocomplete="off" maxlength="200" spellcheck="false" onkeydown="onEditKey(event)">' +
+          tokenSetBadge +
+        '</div>' +
+      '</div>' +
+      '<div class="edit-btns">' +
+        '<button class="btn btn-ghost" onclick="cancelEdit()">取消</button>' +
+        '<button class="btn btn-primary" onclick="saveEdit()">保存</button>' +
+      '</div>' +
+    '</div>';
 }
 
 function rowStateClass(a) {
-  if (a.state === 'checking') return 'st-checking';
+  if (a.state === 'queued' || a.state === 'checking') return 'st-checking';
   if (a.state === 'refreshing') return 'st-refreshing';
   if (a.state === 'logging_in') return 'st-logging-in';
   if (a.state === 'inspecting') return 'st-inspecting';
   if (a.state === 'logged_in') return 'st-logged-in';
-  if (a.state === 'uncertain') return 'st-uncertain';
+  if (a.state === 'uncertain' || a.state === 'needs_login') return 'st-uncertain';
   if (a.state === 'success' || a.checkedToday) return 'st-success';
   if (a.state === 'failed' || a.state === 'inspect_failed') return 'st-failed';
   return '';
 }
 
 function statusLabel(a) {
-  const miniSpinner = `<span class="row-spinner" style="width:13px;height:13px;border-width:1.5px"></span>`;
-  if (a.state === 'checking') return `<span class="status-label checking">${miniSpinner} 签到中</span>`;
-  if (a.state === 'refreshing') return `<span class="status-label refreshing">${miniSpinner} 刷新余额中</span>`;
-  if (a.state === 'logging_in') return `<span class="status-label logging-in">等待登录</span>`;
-  if (a.state === 'inspecting') return `<span class="status-label inspecting">浏览器已打开</span>`;
-  if (a.state === 'logged_in') return `<span class="status-label logged-in">已登录</span>`;
-  if (a.state === 'uncertain') return `<span class="status-label uncertain">${esc(a.message || '待确认')}</span>`;
-  if (a.state === 'login_failed') return `<span class="status-label login-failed">登录失败</span>`;
-  if (a.state === 'inspect_failed') return `<span class="status-label inspect-failed">${esc(a.message || '打开失败')}</span>`;
-  if (a.state === 'success') return `<span class="status-label success">${esc(a.message || '签到成功')}</span>`;
-  if (a.state === 'failed') return `<span class="status-label failed">${esc(a.message || '签到失败')}</span>`;
-  if (!a.hasSession) return `<span class="status-label no-session">未登录</span>`;
-  if (a.checkedToday) return `<span class="status-label success">今日已签到</span><span class="meta-time">${fmtTime(a.lastCheckin)}</span>`;
-  if (a.lastCheckin) return `<span class="status-label idle">待签到</span><span class="meta-time">上次 ${fmtTime(a.lastCheckin)}</span>`;
-  return `<span class="status-label idle">待签到</span>`;
+  const sp = '<span class="row-spinner" style="width:13px;height:13px;border-width:1.5px"></span>';
+  if (a.state === 'queued') return '<span class="status-label queued">' + sp + ' ' + esc(a.message || '排队中') + '</span>';
+  if (a.state === 'checking') return '<span class="status-label checking">' + sp + ' ' + esc(a.message || '签到中') + '</span>';
+  if (a.state === 'refreshing') return '<span class="status-label refreshing">' + sp + ' 刷新余额中</span>';
+  if (a.state === 'logging_in') return '<span class="status-label logging-in">等待登录</span>';
+  if (a.state === 'inspecting') return '<span class="status-label inspecting">浏览器已打开</span>';
+  if (a.state === 'logged_in') return '<span class="status-label logged-in">已登录</span>';
+  if (a.state === 'uncertain') return '<span class="status-label uncertain">' + esc(a.message || '待确认') + '</span>';
+  if (a.state === 'login_failed') return '<span class="status-label login-failed">登录失败</span>';
+  if (a.state === 'needs_login') return '<span class="status-label needs-login">' + esc(a.message || '登录已失效') + '</span>';
+  if (a.state === 'inspect_failed') return '<span class="status-label inspect-failed">' + esc(a.message || '打开失败') + '</span>';
+  if (a.state === 'success') return '<span class="status-label success">' + esc(a.message || '签到成功') + '</span>';
+  if (a.state === 'failed') return '<span class="status-label failed">' + esc(a.message || '签到失败') + '</span>';
+  if (!a.hasSession) return '<span class="status-label no-session">未登录</span>';
+  if (a.checkedToday) return '<span class="status-label success">今日已签到</span><span class="meta-time">' + fmtTime(a.lastCheckin) + '</span>';
+  if (a.lastCheckin) return '<span class="status-label idle">待签到</span><span class="meta-time">上次 ' + fmtTime(a.lastCheckin) + '</span>';
+  return '<span class="status-label idle">待签到</span>';
 }
 
 function browserBtn(a) {
   const n = esc(a.name);
-  const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M10 14 20 4"/><path d="M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4"/></svg>`;
   if (!a.hasSession) return '';
-  if (a.state === 'inspecting') return `<button class="btn-open-browser" disabled title="浏览器已打开">${icon}</button>`;
-  if (['checking', 'refreshing', 'logging_in'].includes(a.state)) return '';
-  return `<button class="btn-open-browser" onclick="openBrowser('${n}')" title="打开浏览器查看">${icon}</button>`;
+  if (a.state === 'inspecting') return '<button class="icon-round btn-open-browser" disabled title="浏览器已打开">' + ic('externalLink') + '</button>';
+  if (['queued', 'checking', 'refreshing', 'logging_in'].includes(a.state)) return '';
+  return '<button class="icon-round btn-open-browser" onclick="openBrowser(\'' + n + '\')" title="打开浏览器查看">' + ic('externalLink') + '</button>';
 }
 
 function actionBtn(a) {
   const n = esc(a.name);
-  if (a.state === 'checking' || a.state === 'refreshing') return '<span class="row-spinner"></span>';
+  if (['queued', 'checking', 'refreshing'].includes(a.state)) return '<span class="row-spinner"></span>';
   if (a.state === 'logging_in') return '<button class="btn-action default" disabled>等待中</button>';
   if (a.state === 'inspecting') return '<button class="btn-action default" disabled>查看中</button>';
-  if (!a.hasSession && a.state !== 'logged_in')
-    return `<button class="btn-action setup" onclick="doLogin('${n}')">去登录</button>`;
+  if ((!a.hasSession && a.state !== 'logged_in') || a.state === 'needs_login')
+    return '<button class="btn-action setup" onclick="doLogin(\'' + n + '\')">去登录</button>';
   if (a.state === 'success' || a.checkedToday)
-    return '<button class="btn-action ok">已完成</button>';
+    return '<button class="btn-action ok">' + ic('check') + '已完成</button>';
   if (a.state === 'uncertain')
-    return `<button class="btn-action default" onclick="doCheckin('${n}')">重试</button>`;
+    return '<button class="btn-action default" onclick="doCheckin(\'' + n + '\')">重试</button>';
   if (a.state === 'failed')
-    return `<button class="btn-action fail" onclick="doCheckin('${n}')">重试</button>`;
-  return `<button class="btn-action default" onclick="doCheckin('${n}')">签到</button>`;
+    return '<button class="btn-action fail" onclick="doCheckin(\'' + n + '\')">重试</button>';
+  return '<button class="btn-action default" onclick="doCheckin(\'' + n + '\')">签到</button>';
 }
 
 function probeBtn(a) {
-  const pulse = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`;
+  const n = esc(a.name);
   if (a.health && a.health.state === 'checking')
-    return `<button class="btn-probe" disabled title="检测中"><span class="row-spinner" style="width:14px;height:14px;border-width:2px"></span></button>`;
-  if (['checking', 'refreshing', 'logging_in', 'inspecting'].includes(a.state)) return '';
+    return '<button class="icon-round btn-probe" disabled title="检测中"><span class="row-spinner" style="width:14px;height:14px;border-width:2px"></span></button>';
+  if (['queued', 'checking', 'refreshing', 'logging_in', 'inspecting'].includes(a.state)) return '';
   if (!a.hasToken)
-    return `<button class="btn-probe no-token" onclick="promptToken('${esc(a.name)}')" title="检测可用性（需先填写 API 令牌，点此去填）">${pulse}</button>`;
-  return `<button class="btn-probe" onclick="checkHealth('${esc(a.name)}')" title="检测可用性（发一条 Claude Code 测试请求）">${pulse}</button>`;
+    return '<button class="icon-round btn-probe no-token" onclick="promptToken(\'' + n + '\')" title="检测可用性（需先填写 API 令牌，点此去填）">' + ic('activity') + '</button>';
+  return '<button class="icon-round btn-probe" onclick="checkHealth(\'' + n + '\')" title="检测可用性（发一条 Claude Code 测试请求）">' + ic('activity') + '</button>';
 }
 
 function healthBadge(a) {
   if (!a.hasToken) return '';
   const h = a.health;
   if (!h) return '';
-  if (h.state === 'checking') {
-    const mini = `<span class="row-spinner" style="width:11px;height:11px;border-width:1.5px"></span>`;
-    return `<span class="health-badge checking">${mini} 检测中</span>`;
-  }
-  if (h.state === 'ok') return `<span class="health-badge ok" title="${esc(h.message || '')}">✓ 可用</span>`;
-  return `<span class="health-badge fail" title="${esc(h.message || '')}">✗ ${esc(healthShort(h))}</span>`;
+  if (h.state === 'checking')
+    return '<span class="health-badge checking"><span class="row-spinner" style="width:11px;height:11px;border-width:1.5px"></span> 检测中</span>';
+  if (h.state === 'ok') return '<span class="health-badge ok" title="' + esc(h.message || '') + '">' + ic('check') + '可用</span>';
+  return '<span class="health-badge fail" title="' + esc(h.message || '') + '">' + ic('x') + esc(healthShort(h)) + '</span>';
 }
-
 function healthShort(h) {
-  const map = {
-    auth: '令牌失效', quota: '余额不足', rate_limit: '限流',
-    model: '模型不可用', network: '连不上', server: '服务端错误', no_token: '未设令牌',
-  };
+  const map = { auth: '令牌失效', quota: '余额不足', rate_limit: '限流', model: '模型不可用', network: '连不上', server: '服务端错误', no_token: '未设令牌' };
   return (h && map[h.category]) || '不可用';
 }
-
-/* ── Activity Render ──────────────────────────────────── */
+/* ── Activity ──────────────────────────────────────────── */
 function renderActivity(history) {
   const el = document.getElementById('activity-content');
   if (!history || !history.length) {
@@ -1286,10 +1333,7 @@ function renderActivity(history) {
     return;
   }
   const groups = {};
-  for (const e of history) {
-    const d = e.time.slice(0, 10);
-    (groups[d] ||= []).push(e);
-  }
+  for (const e of history) { const d = e.time.slice(0, 10); (groups[d] ||= []).push(e); }
   const today = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   let html = '';
@@ -1299,71 +1343,51 @@ function renderActivity(history) {
     else if (ds === yesterday) label = '昨天';
     else label = new Date(ds + 'T00:00:00').toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
 
-    html += `<div class="activity-group"><div class="activity-date">${label}</div><div class="activity-list">`;
+    html += '<div class="activity-group"><div class="activity-date">' + label + '</div><div class="activity-list glass">';
     for (const e of entries) {
-      const bc = e.status === 'success'
-        ? 'success'
-        : e.status === 'failed'
-          ? 'failed'
-          : e.status === 'uncertain'
-            ? 'uncertain'
-            : 'skipped';
-      const bt = e.status === 'success'
-        ? '成功'
-        : e.status === 'failed'
-          ? '失败'
-          : e.status === 'uncertain'
-            ? '待确认'
-            : '跳过';
-      html += `
-        <div class="activity-entry">
-          <span class="activity-time">${fmtTime(e.time)}</span>
-          <span class="activity-name">${esc(e.account)}</span>
-          <span class="activity-result">${esc(e.message || '')}</span>
-          <span class="activity-badge ${bc}">${bt}</span>
-        </div>`;
+      const bc = e.status === 'success' ? 'success' : e.status === 'failed' ? 'failed' : e.status === 'uncertain' ? 'uncertain' : 'skipped';
+      const bIcon = e.status === 'success' ? ic('check') : e.status === 'failed' ? ic('x') : e.status === 'uncertain' ? ic('alertTriangle') : ic('minus');
+      const bt = e.status === 'success' ? '成功' : e.status === 'failed' ? '失败' : e.status === 'uncertain' ? '待确认' : '跳过';
+      html += '' +
+        '<div class="activity-entry">' +
+          '<span class="activity-time">' + fmtTime(e.time) + '</span>' +
+          '<span class="activity-name">' + esc(e.account) + '</span>' +
+          '<span class="activity-result">' + esc(e.message || '') + '</span>' +
+          '<span class="activity-badge ' + bc + '">' + bIcon + bt + '</span>' +
+        '</div>';
     }
     html += '</div></div>';
   }
   el.innerHTML = html;
 }
-
-/* ── Actions ──────────────────────────────────────────── */
+/* ── Actions ───────────────────────────────────────────── */
 async function checkAll() {
   const order = getSortedAccounts().map(a => a.name);
   const res = await api('/api/checkin', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
-  if (res.ok) {
-    toast(`正在签到 ${res.count} 个账号...`);
-    startPolling(); refresh();
-  } else if (res.error) {
-    toast(res.error, 'error');
-  }
+  if (res.ok) { toast('正在签到 ' + res.count + ' 个账号...'); startPolling(); refresh(); }
+  else if (res.error) toast(res.error, 'error');
 }
-
 async function doCheckin(name) {
   const res = await api('/api/checkin/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   startPolling(); refresh();
 }
-
 async function doLogin(name) {
   const res = await api('/api/login/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
-  toast(`正在为「${name}」打开浏览器...`);
+  toast('正在为「' + name + '」打开浏览器...');
   startPolling(); refresh();
 }
-
 async function openBrowser(name) {
   const res = await api('/api/open-browser/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
-  toast(`已为「${name}」打开浏览器窗口`);
+  toast('已为「' + name + '」打开浏览器窗口');
   startPolling(); refresh();
 }
-
 async function loginNew() {
   const res = await api('/api/login-new', { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
@@ -1371,72 +1395,89 @@ async function loginNew() {
   toast('浏览器已打开，请登录后关闭窗口');
   startPolling(); refresh();
 }
-
+function addAccount() {
+  if (currentSite === 'agentrouter') openImportDialog();
+  else loginNew();
+}
+function closeImport() {
+  document.getElementById('import-overlay').classList.add('hidden');
+}
+async function openImportDialog() {
+  document.getElementById('import-overlay').classList.remove('hidden');
+  const el = document.getElementById('import-list');
+  el.innerHTML = '<div class="import-empty">读取 AnyRouter 账号…</div>';
+  const list = await api('/api/ar/importable');
+  if (!list || list.error) {
+    el.innerHTML = '<div class="import-empty">' + esc((list && list.error) || '读取失败') + '</div>';
+    return;
+  }
+  if (!list.length) {
+    el.innerHTML = '<div class="import-empty">AnyRouter 里还没有已登录的账号</div>';
+    return;
+  }
+  el.innerHTML = list.map(a => {
+    const flag = a.imported ? '已导入' : (a.busy ? '正在使用' : '导入');
+    return '<button class="import-item" data-name="' + esc(a.name) + '"' + (a.busy ? ' disabled' : '') + '>' +
+      '<span class="import-name">' + esc(a.name) + '</span>' +
+      (a.note ? '<span class="import-note">' + esc(a.note) + '</span>' : '') +
+      '<span class="import-flag' + (a.imported ? ' done' : '') + '">' + flag + '</span>' +
+    '</button>';
+  }).join('');
+  el.querySelectorAll('.import-item:not([disabled])').forEach(btn => {
+    btn.addEventListener('click', () => importAccount(btn.dataset.name));
+  });
+}
+async function importAccount(name) {
+  closeImport();
+  const res = await api('/api/ar/import', { method: 'POST', body: JSON.stringify({ name }) });
+  if (!res) return;
+  if (res.error) { toast(res.error, 'error'); return; }
+  toast('正在复制「' + name + '」的登录环境，浏览器打开后点一次 LinuxDO 登录');
+  startPolling(); refresh();
+}
 async function refreshBalance() {
   const order = getSortedAccounts().map(a => a.name);
   const res = await api('/api/refresh-balance', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
-  if (res.ok) {
-    toast(`正在刷新 ${res.count} 个账号的余额...`);
-    startPolling(); refresh();
-  } else if (res.error) {
-    toast(res.error, 'error');
-  }
+  if (res.ok) { toast('正在刷新 ' + res.count + ' 个账号的余额...'); startPolling(); refresh(); }
+  else if (res.error) toast(res.error, 'error');
 }
-
 async function refreshBalanceOne(name) {
   const res = await api('/api/refresh-balance/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   startPolling(); refresh();
 }
-
 async function checkHealth(name) {
   const res = await api('/api/check-health/' + encodeURIComponent(name), { method: 'POST', body: JSON.stringify({}) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   startPolling(); refresh();
 }
-
-function promptToken(name) {
-  toast('请先为该账号填写 API 令牌', 'error');
-  startEdit(name);
-}
-
+function promptToken(name) { toast('请先为该账号填写 API 令牌', 'error'); startEdit(name); }
 async function checkHealthAll() {
   const order = getSortedAccounts().map(a => a.name);
   const res = await api('/api/check-health', { method: 'POST', body: JSON.stringify({ order }) });
   if (!res) return;
-  if (res.ok) {
-    toast(`正在检测 ${res.count} 个账号...`);
-    startPolling(); refresh();
-  } else if (res.error) {
-    toast(res.error, 'error');
-  }
+  if (res.ok) { toast('正在检测 ' + res.count + ' 个账号...'); startPolling(); refresh(); }
+  else if (res.error) toast(res.error, 'error');
 }
-
-function toggleSort() {
-  sortByBalance = !sortByBalance;
-  renderDashboard();
-}
-
-/* ── Settings ─────────────────────────────────────────── */
+function toggleSort() { sortByBalance = !sortByBalance; renderDashboard(); }
+/* ── Settings ──────────────────────────────────────────── */
 async function loadSettings() {
   const data = await api('/api/settings');
   if (data && !data.error) { settingsInfo = data; renderDashboard(); }
 }
-
 function fmtNextRun(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   const today = new Date().toDateString();
   const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  if (d.toDateString() === today) return `今天 ${time}`;
+  if (d.toDateString() === today) return '今天 ' + time;
   const tomorrow = new Date(Date.now() + 86400000).toDateString();
-  if (d.toDateString() === tomorrow) return `明天 ${time}`;
+  if (d.toDateString() === tomorrow) return '明天 ' + time;
   return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + time;
 }
-
 function openSettings() {
   const s = settingsInfo || {};
   const sched = s.schedule || {};
@@ -1449,17 +1490,13 @@ function openSettings() {
   const nr = document.getElementById('next-run-line');
   if (sched.enabled && s.nextRun) {
     nr.style.display = '';
-    nr.textContent = `⏰ 下次自动签到: ${fmtNextRun(s.nextRun)}`;
+    nr.innerHTML = ic('clock') + '<span>下次自动签到 ' + esc(fmtNextRun(s.nextRun)) + '</span>';
   } else {
     nr.style.display = 'none';
   }
   document.getElementById('settings-overlay').classList.remove('hidden');
 }
-
-function closeSettings() {
-  document.getElementById('settings-overlay').classList.add('hidden');
-}
-
+function closeSettings() { document.getElementById('settings-overlay').classList.add('hidden'); }
 function gatherSettings() {
   return {
     schedule: {
@@ -1470,19 +1507,17 @@ function gatherSettings() {
     notify: { url: document.getElementById('set-notify-url').value.trim() },
   };
 }
-
 async function saveSettings() {
   const res = await api('/api/settings', { method: 'PUT', body: JSON.stringify(gatherSettings()) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   closeSettings();
-  toast('设置已保存');
+  toast('设置已保存', 'success-toast');
   // 调度器约 30 秒内应用新排程，稍后刷新“下次运行”显示
   setTimeout(loadSettings, 2000);
   setTimeout(loadSettings, 35000);
   loadSettings();
 }
-
 async function testNotify() {
   // 先保存当前填写的 URL，再发测试，避免“填了没保存”测的还是旧配置
   const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify(gatherSettings()) });
@@ -1493,39 +1528,30 @@ async function testNotify() {
   if (res.error) { toast(res.error, 'error'); return; }
   toast('测试通知已发送', 'success-toast');
 }
-
 async function changePassword() {
   const oldPw = document.getElementById('set-pw-old').value;
   const newPw = document.getElementById('set-pw-new').value;
   if (!newPw) { toast('请输入新密码', 'error'); return; }
-  const res = await api('/api/auth/change-password', {
-    method: 'POST',
-    body: JSON.stringify({ oldPassword: oldPw, newPassword: newPw }),
-  });
+  const res = await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword: oldPw, newPassword: newPw }) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   document.getElementById('set-pw-old').value = '';
   document.getElementById('set-pw-new').value = '';
   toast('密码已修改', 'success-toast');
 }
-
+/* ── Delete ────────────────────────────────────────────── */
 function confirmDelete(name) { confirmingDelete = name; editingAccount = null; renderDashboard(); }
 function cancelDelete() { confirmingDelete = null; renderDashboard(); }
 async function doDelete(name) {
   const res = await api('/api/accounts/' + encodeURIComponent(name), { method: 'DELETE' });
   if (!res) return;
   confirmingDelete = null;
-  toast(`已移除「${name}」`);
+  toast('已移除「' + name + '」');
   await refresh();
 }
 
-/* ── Edit Account ─────────────────────────────────────── */
-function startEdit(name) {
-  editingAccount = name;
-  confirmingDelete = null;
-  pendingTokenClear = false;
-  renderDashboard();
-}
+/* ── Edit Account ──────────────────────────────────────── */
+function startEdit(name) { editingAccount = name; confirmingDelete = null; pendingTokenClear = false; renderDashboard(); }
 function cancelEdit() { editingAccount = null; pendingTokenClear = false; renderDashboard(); }
 function toggleTokenClear() { pendingTokenClear = !pendingTokenClear; renderDashboard(); }
 function onEditKey(e) {
@@ -1546,32 +1572,27 @@ async function saveEdit() {
   if (newName !== origName) body.name = newName;
   if (pendingTokenClear) body.token = null;
   else if (newToken) body.token = newToken;
-  // If nothing changed, just close the editor
+
   const orig = accounts.find(a => a.name === origName);
   if (newName === origName && newNote === (orig?.note || '') && !newToken && !pendingTokenClear) {
     editingAccount = null;
     renderDashboard();
     return;
   }
-
-  const res = await api('/api/accounts/' + encodeURIComponent(origName), {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  });
+  const res = await api('/api/accounts/' + encodeURIComponent(origName), { method: 'PATCH', body: JSON.stringify(body) });
   if (!res) return;
   if (res.error) { toast(res.error, 'error'); return; }
   editingAccount = null;
   pendingTokenClear = false;
-  toast('已保存');
+  toast('已保存', 'success-toast');
   await refresh();
 }
-
-/* ── Polling ──────────────────────────────────────────── */
+/* ── Polling ───────────────────────────────────────────── */
 function startPolling() { if (!pollTimer) pollTimer = setInterval(refresh, 1200); }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-/* ── Helpers ──────────────────────────────────────────── */
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;'); }
+/* ── Helpers ───────────────────────────────────────────── */
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML.replace(/'/g, '&#39;').replace(/"/g, '&quot;'); }
 function fmtTime(iso) {
   if (!iso) return '';
   try { return new Date(iso).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
@@ -1580,37 +1601,37 @@ function fmtTime(iso) {
 function toast(msg, type = '') {
   const el = document.createElement('div');
   el.className = 'toast' + (type ? ' ' + type : '');
-  el.textContent = msg;
+  const iconName = type === 'error' ? 'x' : type === 'success-toast' ? 'check' : 'activity';
+  el.innerHTML = '<span class="ic-slot">' + ic(iconName) + '</span><span>' + esc(msg) + '</span>';
   document.getElementById('toasts').appendChild(el);
   requestAnimationFrame(() => el.classList.add('visible'));
-  setTimeout(() => { el.classList.add('hiding'); setTimeout(() => el.remove(), 300); }, 3000);
+  setTimeout(() => { el.classList.add('hiding'); setTimeout(() => el.remove(), 320); }, 3000);
 }
 
-/* ── Auth ─────────────────────────────────────────────── */
-let authMode = 'login';
+/* ── Cursor spotlight ──────────────────────────────────── */
+function bindSpotlight() {
+  document.addEventListener('pointermove', e => {
+    const t = e.target.closest && e.target.closest('[data-spotlight]');
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    t.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+    t.style.setProperty('--my', (e.clientY - r.top) + 'px');
+  }, { passive: true });
+}
 
+/* ── Auth ──────────────────────────────────────────────── */
+let authMode = 'login';
 async function checkAuth() {
   try {
     const res = await fetch('/api/auth/status');
     const data = await res.json();
-    if (!data.hasPassword) {
-      authMode = 'setup';
-      showAuthScreen();
-      return false;
-    }
-    if (!data.authed) {
-      authMode = 'login';
-      showAuthScreen();
-      return false;
-    }
+    if (!data.hasPassword) { authMode = 'setup'; showAuthScreen(); return false; }
+    if (!data.authed) { authMode = 'login'; showAuthScreen(); return false; }
     document.getElementById('btn-logout').style.display = '';
     document.getElementById('btn-settings').style.display = '';
     return true;
-  } catch {
-    return true;
-  }
+  } catch { return true; }
 }
-
 function showAuthScreen() {
   const screen = document.getElementById('auth-screen');
   const title = document.getElementById('auth-title');
@@ -1624,8 +1645,7 @@ function showAuthScreen() {
   if (authMode === 'setup') {
     title.textContent = '设置管理员密码';
     desc.textContent = '首次使用，请设置一个密码来保护管理面板';
-    pw2.classList.remove('hidden');
-    pw2.value = '';
+    pw2.classList.remove('hidden'); pw2.value = '';
     submit.textContent = '设置密码';
   } else {
     title.textContent = '登录';
@@ -1635,14 +1655,12 @@ function showAuthScreen() {
   }
   setTimeout(() => document.getElementById('auth-pw').focus(), 100);
 }
-
 function hideAuthScreen() {
   document.getElementById('auth-screen').classList.add('hidden');
   document.getElementById('btn-logout').style.display = '';
   document.getElementById('btn-settings').style.display = '';
   loadSettings();
 }
-
 async function authSubmit() {
   const pw = document.getElementById('auth-pw').value;
   const error = document.getElementById('auth-error');
@@ -1654,32 +1672,21 @@ async function authSubmit() {
     if (pw.length < 4) { error.textContent = '密码至少4位'; return; }
     submit.disabled = true;
     try {
-      const res = await fetch('/api/auth/setup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
-      });
+      const res = await fetch('/api/auth/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) });
       const data = await res.json();
-      if (data.ok) { hideAuthScreen(); refresh(); }
-      else { error.textContent = data.error || '设置失败'; }
+      if (data.ok) { hideAuthScreen(); refresh(); } else { error.textContent = data.error || '设置失败'; }
     } catch { error.textContent = '网络错误'; }
     submit.disabled = false;
   } else {
     submit.disabled = true;
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
-      });
+      const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) });
       const data = await res.json();
-      if (data.ok) { hideAuthScreen(); refresh(); }
-      else { error.textContent = data.error || '登录失败'; }
+      if (data.ok) { hideAuthScreen(); refresh(); } else { error.textContent = data.error || '登录失败'; }
     } catch { error.textContent = '网络错误'; }
     submit.disabled = false;
   }
 }
-
 async function authLogout() {
   await fetch('/api/auth/logout', { method: 'POST' });
   document.getElementById('btn-logout').style.display = 'none';
@@ -1689,7 +1696,29 @@ async function authLogout() {
   showAuthScreen();
 }
 
-/* ── Init ─────────────────────────────────────────────── */
+/* ── Theme ─────────────────────────────────────────────── */
+function currentTheme() { return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'; }
+function applyThemeIcon() {
+  const btn = document.getElementById('btn-theme');
+  if (!btn) return;
+  const light = currentTheme() === 'light';
+  btn.innerHTML = '<span class="ic-slot">' + ic(light ? 'moon' : 'sun') + '</span>';
+  btn.title = light ? '切换到深色' : '切换到浅色';
+}
+function toggleTheme() {
+  const next = currentTheme() === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('theme', next); } catch (e) {}
+  applyThemeIcon();
+}
+
+/* ── Init ──────────────────────────────────────────────── */
+hydrateIcons(document);
+applyThemeIcon();
+bindSpotlight();
+moveNavIndicator();
+window.addEventListener('resize', moveNavIndicator);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(moveNavIndicator);
 document.getElementById('auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') { if (authMode === 'setup') document.getElementById('auth-pw2').focus(); else authSubmit(); }});
 document.getElementById('auth-pw2').addEventListener('keydown', e => { if (e.key === 'Enter') authSubmit(); });
 (async () => { if (await checkAuth()) { refresh(); loadSettings(); } })();

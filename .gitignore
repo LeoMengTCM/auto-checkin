@@ -7,7 +7,9 @@ logs/
 # Sensitive data - don't commit
 data/profiles/
 data/history.json
+data/agentrouter_history.json
 config/accounts.json
+config/agentrouter_accounts.json
 
 data/debug/
 
